@@ -1,0 +1,30 @@
+{
+  "timestamp": "2026-10-26T04:41:00Z",
+  "pi_version": "1.4.0",
+  "system": "Linux 7.3.0-3-cachyos x86_64",
+  "default_model": "openai-codex/gpt-6-luna",
+  "provider": "openai-codex",
+  "thinking_level": "max",
+  "tools": "read,bash,edit,write,subagent",
+  "mcp": "disabled",
+  "aliases": {
+    "pil": "command pi --tools read,bash,edit,write --no-mcp",
+    "pia": "command pi --tools read,bash,edit,write,subagent --no-mcp",
+    "pim": "command pi --tools read,bash,edit,write,subagent,tool_search",
+    "pif": "command pi"
+  },
+  "global_pi_extensions": [
+    "orca-agent-status.ts",
+    "orca-prefill.ts",
+    "orca-titlebar-spinner.ts",
+    "builtin:llama.cpp"
+  ],
+  "global_packages": [
+    "git:github.com/Rahularya01/pi-antigravity",
+    "git:github.com/obra/superpowers",
+    "npm:@narumitw/pi-lsp",
+    "npm:pi-subagents",
+    "npm:pi-playwright"
+  ],
+  "global_modifications_made": 0
+}

@@ -1,0 +1,61 @@
+{
+  "lastChangelogVersion": "1.4.0",
+  "defaultProvider": "antigravity",
+  "defaultModel": "gemini-3.8-flash",
+  "deviceId": "9f562e49-0c61-46bd-bdf2-39f7c88ce054",
+  "packages": [
+    {
+      "source": "git:github.com/Rahularya01/pi-antigravity",
+      "extensions": [
+        "-src/features/generate-image.ts",
+        "-src/features/google-search.ts"
+      ]
+    },
+    {
+      "source": "git:github.com/obra/superpowers",
+      "extensions": [
+        "-.pi/extensions/superpowers.ts"
+      ]
+    },
+    {
+      "source": "npm:@narumitw/pi-lsp",
+      "extensions": [
+        "-dist/index.ts"
+      ]
+    },
+    "npm:pi-subagents",
+    "npm:pi-playwright"
+  ],
+  "defaultThinkingLevel": "high",
+  "steeringMode": "one-at-a-time",
+  "hideThinkingBlock": false,
+  "showTurnTime": true,
+  "showCacheMissNotices": true,
+  "compaction": {
+    "enabled": true,
+    "reserveTokens": 16384,
+    "keepRecentTokens": 20000
+  },
+  "retry": {
+    "enabled": true,
+    "maxRetries": 3,
+    "baseDelayMs": 1000,
+    "maxAgentDelayMs": 30000
+  },
+  "enableInstallTelemetry": false,
+  "defaultProjectTrust": "always",
+  "modelThinkingLevels": {
+    "openai-codex/gpt-6-luna": "high"
+  },
+  "theme": "dark",
+  "extensions": [
+    "-extensions/orca-agent-status.ts",
+    "-extensions/orca-prefill.ts",
+    "-extensions/orca-titlebar-spinner.ts",
+    "-builtin:llama.cpp"
+  ],
+  "showHardwareCursor": true,
+  "terminal": {
+    "showTerminalProgress": true
+  }
+}

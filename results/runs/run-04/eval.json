@@ -1,0 +1,16 @@
+{
+  "task": "task-1",
+  "target_dir": "/home/khoa/pi-token-bench/task-1/test-config-d",
+  "expected_filename": "task-1-test-config-d.py",
+  "deliverable_exists": true,
+  "single_deliverable": true,
+  "deliverable_sha256": "61ab55b7e0f97f7499aa19d9cd0be76a60168154636b83b0c9afa1144e5b6fff",
+  "line_count": 181,
+  "self_tests_passed": true,
+  "self_tests_output": ".........\n----------------------------------------------------------------------\nRan 9 tests in 0.052s\n\nOK",
+  "external_tests_passed": true,
+  "external_total": 10,
+  "external_passed": 10,
+  "failures": [],
+  "overall_passed": true
+}

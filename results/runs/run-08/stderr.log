@@ -1,0 +1,18 @@
+======================================================================
+  Pi Token Optimization Benchmark Launcher
+======================================================================
+  Profile:            D — Optimized
+  Target Workspace:   /home/khoa/pi-token-bench/task-2/test-config-d
+  Optimizers:
+    - Ponytail:       LITE
+    - Caveman:        LITE
+    - RTK:            ON
+    - Headroom:       OFF
+  Runtime Configuration:
+    - Provider:       openai-codex
+    - Model:          gpt-6-luna
+    - Toolset:        read,bash,edit,write,subagent
+    - MCP Disabled:   true
+    - Superpowers:    preserved (via global settings.json packages)
+    - Sessions Dir:   /home/khoa/pi-token-bench/setup/sessions/run-08
+======================================================================

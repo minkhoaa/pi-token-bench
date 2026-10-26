@@ -1,0 +1,16 @@
+# ~/.zshenv - Loaded for all Zsh instances (interactive, non-interactive, scripts)
+# Keep root home clean by establishing ZDOTDIR in ~/.config/zsh
+
+export ZDOTDIR="${XDG_CONFIG_HOME:-$HOME/.config}/zsh"
+
+# Source environment variables and PATH so they are always available
+if [[ -r "$ZDOTDIR/00-env.zsh" ]]; then
+    source "$ZDOTDIR/00-env.zsh"
+fi
+alias pil='command pi --tools read,bash,edit,write --no-mcp'
+
+alias pia='command pi --tools read,bash,edit,write,subagent --no-mcp'
+
+alias pim='command pi --tools read,bash,edit,write,subagent,tool_search'
+
+alias pif='command pi'

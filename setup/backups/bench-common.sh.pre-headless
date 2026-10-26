@@ -1,0 +1,156 @@
+#!/usr/bin/env bash
+# Shared launcher engine for Pi Token Optimization Benchmark
+set -euo pipefail
+
+BENCH_ROOT="/home/khoa/pi-token-bench"
+SETUP_DIR="${BENCH_ROOT}/setup"
+SESSIONS_DIR="${SETUP_DIR}/sessions"
+PROFILES_DIR="${SETUP_DIR}/profiles"
+EXTENSIONS_DIR="${SETUP_DIR}/extensions"
+BIN_DIR="${SETUP_DIR}/bin"
+
+mkdir -p "${SESSIONS_DIR}"
+
+PROFILE="${1:-}"
+TARGET_DIR="${2:-}"
+shift 2 2>/dev/null || true
+EXTRA_ARGS=("$@")
+
+if [[ -z "${PROFILE}" || -z "${TARGET_DIR}" ]]; then
+  echo "Error: Missing arguments."
+  echo "Usage: bench-<a|b|c|d> <target-task-dir> [additional-pi-args...]"
+  echo ""
+  echo "Example:"
+  echo "  bench-a ~/pi-token-bench/task-1/test-config-a"
+  exit 1
+fi
+
+# Resolve target directory
+if [[ ! -d "${TARGET_DIR}" ]]; then
+  echo "Error: Target directory does not exist: ${TARGET_DIR}"
+  exit 1
+fi
+
+TARGET_DIR_ABS="$(cd "${TARGET_DIR}" && pwd -P)"
+
+# Common base configuration for all benchmark profiles
+# All profiles strictly share the same model, provider, thinking level, tools, and MCP settings.
+MODEL_PROVIDER="openai-codex"
+MODEL_NAME="gpt-6-luna:max"
+ALLOWED_TOOLS="read,bash,edit,write,subagent"
+
+PI_ARGS=(
+  "--provider" "${MODEL_PROVIDER}"
+  "--model" "${MODEL_NAME}"
+  "--tools" "${ALLOWED_TOOLS}"
+  "--no-mcp"
+  "--session-dir" "${SESSIONS_DIR}"
+)
+
+# Profile configuration matrix
+PONYTAIL_STATE="OFF"
+CAVEMAN_STATE="OFF"
+RTK_STATE="OFF"
+HEADROOM_STATE="OFF"
+
+case "${PROFILE}" in
+  A|a)
+    PROFILE_NAME="A — Baseline"
+    PONYTAIL_STATE="OFF"
+    CAVEMAN_STATE="OFF"
+    RTK_STATE="OFF"
+    HEADROOM_STATE="OFF"
+    export RTK_DISABLED=1
+    ;;
+
+  B|b)
+    PROFILE_NAME="B — Minimal"
+    PONYTAIL_STATE="LITE"
+    CAVEMAN_STATE="OFF"
+    RTK_STATE="OFF"
+    HEADROOM_STATE="OFF"
+    export RTK_DISABLED=1
+    PI_ARGS+=(
+      "--append-system-prompt" "${PROFILES_DIR}/ponytail-lite.md"
+    )
+    ;;
+
+  C|c)
+    PROFILE_NAME="C — Terse"
+    PONYTAIL_STATE="LITE"
+    CAVEMAN_STATE="LITE"
+    RTK_STATE="OFF"
+    HEADROOM_STATE="OFF"
+    export RTK_DISABLED=1
+    PI_ARGS+=(
+      "--append-system-prompt" "${PROFILES_DIR}/combined-lite.md"
+    )
+    ;;
+
+  D|d)
+    PROFILE_NAME="D — Optimized"
+    PONYTAIL_STATE="LITE"
+    CAVEMAN_STATE="LITE"
+    RTK_STATE="ON"
+    HEADROOM_STATE="OFF"
+    export RTK_DISABLED=0
+    export PATH="${BIN_DIR}:${PATH}"
+    export XDG_DATA_HOME="${SETUP_DIR}/.local/share"
+    PI_ARGS+=(
+      "--append-system-prompt" "${PROFILES_DIR}/combined-lite.md"
+      "-e" "${EXTENSIONS_DIR}/rtk.ts"
+    )
+    ;;
+
+  E|e)
+    PROFILE_NAME="E — Experimental (Headroom)"
+    if [[ "${BENCH_E_ALLOWED:-0}" != "1" ]]; then
+      echo "Error: Profile E is experimental and must remain disabled during initial benchmarking."
+      echo "To run experimental local evaluation, set BENCH_E_ALLOWED=1."
+      exit 1
+    fi
+    HEADROOM_STATE="ON"
+    ;;
+
+  *)
+    echo "Error: Unknown profile '${PROFILE}'. Valid profiles: A, B, C, D, E"
+    exit 1
+    ;;
+esac
+
+# Print Profile Verification Banner
+echo "======================================================================"
+echo "  Pi Token Optimization Benchmark Launcher"
+echo "======================================================================"
+echo "  Profile:            ${PROFILE_NAME}"
+echo "  Target Workspace:   ${TARGET_DIR_ABS}"
+echo "  Optimizers:"
+echo "    - Ponytail:       ${PONYTAIL_STATE}"
+echo "    - Caveman:        ${CAVEMAN_STATE}"
+echo "    - RTK:            ${RTK_STATE}"
+echo "    - Headroom:       ${HEADROOM_STATE}"
+echo "  Runtime Configuration:"
+echo "    - Provider:       ${MODEL_PROVIDER}"
+echo "    - Model:          ${MODEL_NAME}"
+echo "    - Toolset:        ${ALLOWED_TOOLS}"
+echo "    - MCP Disabled:   true"
+echo "    - Superpowers:    preserved (via global settings.json packages)"
+echo "    - Sessions Dir:   ${SESSIONS_DIR}"
+echo "======================================================================"
+
+# If dry run requested, show command and exit without making model calls
+if [[ "${BENCH_DRY_RUN:-0}" == "1" ]]; then
+  echo "[DRY RUN] Would change directory to: ${TARGET_DIR_ABS}"
+  echo "[DRY RUN] Environment:"
+  echo "  RTK_DISABLED=${RTK_DISABLED:-unset}"
+  echo "  PATH=${PATH}"
+  echo "[DRY RUN] Command:"
+  echo "  command pi ${PI_ARGS[*]} ${EXTRA_ARGS[*]}"
+  exit 0
+fi
+
+# Change to target directory
+cd "${TARGET_DIR_ABS}"
+
+# Launch Pi
+exec command pi "${PI_ARGS[@]}" "${EXTRA_ARGS[@]}"

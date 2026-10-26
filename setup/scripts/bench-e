@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Benchmark Launcher for Profile E (Experimental: Headroom On)
+# Profile E remains disabled during standard benchmarks unless BENCH_E_ALLOWED=1 is set.
+REAL_SCRIPT="$(readlink -f "${BASH_SOURCE[0]}")"
+SCRIPT_DIR="$(cd "$(dirname "${REAL_SCRIPT}")" && pwd -P)"
+exec "${SCRIPT_DIR}/bench-common.sh" "E" "$@"

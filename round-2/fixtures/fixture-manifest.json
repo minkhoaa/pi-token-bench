@@ -1,0 +1,26 @@
+{
+  "task-3-fixture": {
+    "README.md": "eca592cc0f476bffb1519d7c236425a8cc23588a9eddf0e35db2ed8ea6239dda",
+    "schema.sql": "485c680639b32fcf785842ded7a7545b0de056e7565210084b858123c8e3fc49",
+    "scripts/bootstrap_db.py": "09d8196a40a29d37831c84dc5a10d008a7f1c8c6780b09eaec5693989ddf333b",
+    "src/db.py": "5859abf233a86621bc7c397efed9f6e4f96d29b35ef5065d83f2669c3ae1da3d",
+    "src/exceptions.py": "630287a7eab90fc52c89f6a3d5c668a732964fba531560799e3483a837676c11",
+    "src/models.py": "be509a3b586b80268769ac84d35496c64abb3f9cedead9dd7c015ec5e086052a",
+    "src/reservations.py": "89c55c47acb631e0b45646f8f956f4ae21e69dbe82379aef0324a05734b41307",
+    "tests/test_basic.py": "d7b50509c277f1d7dc68db35f8b3abfb4a4739dd153ec965de15cce72de8d605",
+    "tests/test_concurrency_smoke.py": "e869c2269f90a6e93cd4a4793b86ddfb5db54bc10a0cd2625617de3c2e7dc334"
+  },
+  "task-4-fixture": {
+    "README.md": "22067a8cedc0ca52ec9fc7fa7d06bf0334bdf78779386f72df9acb2df314f8b0",
+    "src/exceptions.py": "c5027c933983f83efce84e834391f95a7e6514c8517f006440384a494cb3baed",
+    "src/hasher.py": "e0654fa0da6f9a2c2f24a23ef2e881bdd09f67059be8231be1b04f8826a76720",
+    "src/indexer.py": "8960868c1850859795ef9e29f8013e5bd6bf4c40fdd608139e8cda5d702cdbe9",
+    "src/manifest.py": "08c0c0afa8d5601e09e5eb3627cb4b6465af3f170800253b17700f7ffc14a2bd",
+    "tests/test_indexer.py": "1bc8035cb96fa91d31cc6e986293cfe3f0e880e57a7df859cc77dbef08dc5e1f",
+    "tests/test_symlinks.py": "f578483058c3f80ca3994c2a8b3a6686fb66ac62d240c87aff5dad077aedc36a"
+  },
+  "evaluators": {
+    "eval_task_3.py": "f4a2794e3cf6c3b2b5743b3e82aea5019ed8a05319874448b4df17a2821b2ad8",
+    "eval_task_4.py": "e6a6cd14c3384d9b4bcabfbfeb6a3cde6b618d02ad97bd57a973dfe5a8ad9e0f"
+  }
+}

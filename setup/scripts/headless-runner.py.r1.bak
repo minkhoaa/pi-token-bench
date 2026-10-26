@@ -1,0 +1,950 @@
+#!/usr/bin/env python3
+"""
+Autonomous Headless Pi Benchmark Orchestrator.
+Pin model: openai-codex / gpt-6-luna (thinking: max)
+Enforces profile isolation (A: baseline, B: ponytail, C: combined, D: combined+rtk).
+Runs 8 sequential headless Pi benchmark workers with complete telemetry and independent verification.
+"""
+
+import argparse
+import csv
+import datetime
+import hashlib
+import json
+import os
+import signal
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+BENCH_ROOT = Path("/home/khoa/pi-token-bench").resolve()
+SETUP_DIR = BENCH_ROOT / "setup"
+SESSIONS_ROOT = SETUP_DIR / "sessions"
+PROMPTS_DIR = SETUP_DIR / "prompts"
+EVAL_DIR = SETUP_DIR / "evaluation"
+RESULTS_DIR = BENCH_ROOT / "results"
+RUNS_DIR = RESULTS_DIR / "runs"
+
+# Ensure evaluation modules can be imported
+if str(EVAL_DIR) not in sys.path:
+    sys.path.insert(0, str(EVAL_DIR))
+
+try:
+    from eval_task_1 import evaluate_task_1
+    from eval_task_2 import evaluate_task_2
+except ImportError:
+    evaluate_task_1 = None
+    evaluate_task_2 = None
+
+# 8 canonical benchmark runs
+RUN_CONFIGS = [
+    {"run_id": "run-01", "task": "task-1", "profile": "A", "workspace": "task-1/test-config-a", "launcher": "bench-a"},
+    {"run_id": "run-02", "task": "task-1", "profile": "B", "workspace": "task-1/test-config-b", "launcher": "bench-b"},
+    {"run_id": "run-03", "task": "task-1", "profile": "C", "workspace": "task-1/test-config-c", "launcher": "bench-c"},
+    {"run_id": "run-04", "task": "task-1", "profile": "D", "workspace": "task-1/test-config-d", "launcher": "bench-d"},
+    {"run_id": "run-05", "task": "task-2", "profile": "A", "workspace": "task-2/test-config-a", "launcher": "bench-a"},
+    {"run_id": "run-06", "task": "task-2", "profile": "B", "workspace": "task-2/test-config-b", "launcher": "bench-b"},
+    {"run_id": "run-07", "task": "task-2", "profile": "C", "workspace": "task-2/test-config-c", "launcher": "bench-c"},
+    {"run_id": "run-08", "task": "task-2", "profile": "D", "workspace": "task-2/test-config-d", "launcher": "bench-d"},
+]
+
+PROFILE_NAMES = {
+    "A": "A — Baseline",
+    "B": "B — Minimal",
+    "C": "C — Terse",
+    "D": "D — Optimized",
+}
+
+
+def atomic_write_json(file_path: Path, data: Any):
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = file_path.with_suffix(".tmp." + str(os.getpid()))
+    with open(temp_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+    os.replace(temp_path, file_path)
+
+
+def atomic_write_text(file_path: Path, text: str):
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = file_path.with_suffix(".tmp." + str(os.getpid()))
+    with open(temp_path, "w", encoding="utf-8") as f:
+        f.write(text)
+    os.replace(temp_path, file_path)
+
+
+class TelemetryCollector:
+    def __init__(self, run_config: dict):
+        self.run_id = run_config["run_id"]
+        self.task_id = run_config["task"]
+        self.profile = run_config["profile"]
+        self.profile_name = PROFILE_NAMES.get(self.profile, self.profile)
+        self.workspace = run_config["workspace"]
+        self.workspace_dir = str(BENCH_ROOT / self.workspace)
+        
+        self.pi_version = "1.4.0"
+        self.model_id = "gpt-6-luna"
+        self.provider = "openai-codex"
+        self.reasoning_level = "max"
+        
+        self.session_id: Optional[str] = None
+        self.start_time = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        self.end_time: Optional[str] = None
+        self.duration_sec = 0.0
+        self.exit_code: Optional[int] = None
+        self.termination_reason = "pending"
+        
+        self.input_tokens = 0
+        self.output_tokens = 0
+        self.cache_read_tokens = 0
+        self.cache_write_tokens = 0
+        self.total_tokens = 0
+        self.estimated_cost = 0.0
+        self.cost_incomplete = False
+        
+        self.tool_calls: Dict[str, int] = {}
+        self.tool_errors = 0
+        self.subagent_calls = 0
+        self.subagent_usage: Optional[dict] = None
+        
+        self.retry_events = 0
+        self.compaction_events = 0
+        self.agent_settled_aborted: Optional[bool] = None
+        self.assistant_stop_reason: Optional[str] = None
+        
+        # Evaluation outcomes
+        self.self_test_passed = False
+        self.self_test_output = ""
+        self.independent_test_passed = False
+        self.independent_total = 0
+        self.independent_passed = 0
+        self.failures: List[str] = []
+        self.output_file: Optional[str] = None
+        self.output_file_sha256: Optional[str] = None
+        self.line_count = 0
+        
+        self.status = "PENDING"
+        self._lock = threading.Lock()
+
+    def process_event(self, event: dict):
+        with self._lock:
+            event_type = event.get("type")
+            if event_type == "session":
+                self.session_id = event.get("id")
+            elif event_type == "message_end":
+                msg = event.get("message", {})
+                if msg.get("role") == "assistant":
+                    usage = msg.get("usage", {})
+                    inp = usage.get("input", 0)
+                    out = usage.get("output", 0)
+                    cr = usage.get("cacheRead", 0)
+                    cw = usage.get("cacheWrite", 0)
+                    tot = usage.get("totalTokens", inp + out + cr + cw)
+                    cost = usage.get("cost", {}).get("total", 0.0)
+
+                    self.input_tokens += inp
+                    self.output_tokens += out
+                    self.cache_read_tokens += cr
+                    self.cache_write_tokens += cw
+                    self.total_tokens += tot
+                    self.estimated_cost += cost
+
+                    if msg.get("stopReason"):
+                        self.assistant_stop_reason = msg.get("stopReason")
+                    if msg.get("model"):
+                        self.model_id = msg.get("model")
+                    if msg.get("provider"):
+                        self.provider = msg.get("provider")
+
+            elif event_type == "compaction_start":
+                self.compaction_events += 1
+
+            elif event_type == "compaction_end":
+                res = event.get("result", {})
+                if res and "usage" in res:
+                    c_usage = res["usage"]
+                    self.input_tokens += c_usage.get("input", 0)
+                    self.output_tokens += c_usage.get("output", 0)
+                    self.cache_read_tokens += c_usage.get("cacheRead", 0)
+                    self.cache_write_tokens += c_usage.get("cacheWrite", 0)
+                    self.total_tokens += c_usage.get("totalTokens", 0)
+                    self.estimated_cost += c_usage.get("cost", {}).get("total", 0.0)
+
+            elif event_type == "auto_retry_start":
+                self.retry_events += 1
+
+            elif event_type == "tool_execution_start":
+                t_name = event.get("toolName", "unknown")
+                self.tool_calls[t_name] = self.tool_calls.get(t_name, 0) + 1
+                if t_name == "subagent":
+                    self.subagent_calls += 1
+
+            elif event_type == "tool_execution_end":
+                if event.get("isError"):
+                    self.tool_errors += 1
+                t_name = event.get("toolName")
+                if t_name == "subagent":
+                    # Check if subagent returned usage
+                    res = event.get("result", {})
+                    details = res.get("details", {})
+                    if "usage" in details:
+                        self.subagent_usage = details["usage"]
+                    else:
+                        self.cost_incomplete = True
+
+            elif event_type == "agent_settled":
+                self.agent_settled_aborted = event.get("aborted", False)
+
+    def to_dict(self) -> dict:
+        with self._lock:
+            return {
+                "run_id": self.run_id,
+                "task_id": self.task_id,
+                "profile": self.profile,
+                "profile_name": self.profile_name,
+                "workspace": self.workspace,
+                "workspace_dir": self.workspace_dir,
+                "pi_version": self.pi_version,
+                "model_id": self.model_id,
+                "provider": self.provider,
+                "reasoning_level": self.reasoning_level,
+                "session_id": self.session_id,
+                "start_time": self.start_time,
+                "end_time": self.end_time,
+                "duration_sec": round(self.duration_sec, 2),
+                "exit_code": self.exit_code,
+                "termination_reason": self.termination_reason,
+                "input_tokens": self.input_tokens,
+                "output_tokens": self.output_tokens,
+                "cache_read_tokens": self.cache_read_tokens,
+                "cache_write_tokens": self.cache_write_tokens,
+                "total_tokens": self.total_tokens,
+                "estimated_cost": round(self.estimated_cost, 6),
+                "cost_incomplete": self.cost_incomplete,
+                "tool_calls": self.tool_calls,
+                "tool_errors": self.tool_errors,
+                "subagent_calls": self.subagent_calls,
+                "subagent_usage": self.subagent_usage,
+                "retry_events": self.retry_events,
+                "compaction_events": self.compaction_events,
+                "agent_settled_aborted": self.agent_settled_aborted,
+                "assistant_stop_reason": self.assistant_stop_reason,
+                "self_test_passed": self.self_test_passed,
+                "self_test_output": self.self_test_output,
+                "independent_test_passed": self.independent_test_passed,
+                "independent_total": self.independent_total,
+                "independent_passed": self.independent_passed,
+                "failures": self.failures,
+                "output_file": self.output_file,
+                "output_file_sha256": self.output_file_sha256,
+                "line_count": self.line_count,
+                "status": self.status,
+            }
+
+
+def query_rtk_gain() -> dict:
+    rtk_bin = SETUP_DIR / "bin" / "rtk"
+    xdg_share = SETUP_DIR / ".local" / "share"
+    if not rtk_bin.is_file():
+        return {}
+    env = os.environ.copy()
+    env["XDG_DATA_HOME"] = str(xdg_share)
+    try:
+        proc = subprocess.run(
+            [str(rtk_bin), "gain", "--format", "json"],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=10,
+        )
+        if proc.returncode == 0:
+            return json.loads(proc.stdout)
+    except Exception:
+        pass
+    return {}
+
+
+def run_benchmark_worker(run_config: dict, timeout_sec: int = 900) -> TelemetryCollector:
+    collector = TelemetryCollector(run_config)
+    run_id = run_config["run_id"]
+    task_id = run_config["task"]
+    profile = run_config["profile"]
+    workspace_dir = BENCH_ROOT / run_config["workspace"]
+    launcher_script = BENCH_ROOT / run_config["launcher"]
+    prompt_file = PROMPTS_DIR / f"{task_id}.md"
+
+    run_dir = RUNS_DIR / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    session_dir = SESSIONS_ROOT / run_id
+    session_dir.mkdir(parents=True, exist_ok=True)
+
+    if not prompt_file.is_file():
+        collector.status = "BLOCKED"
+        collector.failures.append(f"Prompt file missing: {prompt_file}")
+        return collector
+
+    prompt_content = prompt_file.read_text(encoding="utf-8")
+
+    # Command array: launcher <workspace-dir> --mode json -- <prompt>
+    cmd = [
+        str(launcher_script),
+        str(workspace_dir),
+        "--mode",
+        "json",
+        "--",
+        prompt_content,
+    ]
+
+    env = os.environ.copy()
+    env["BENCH_SESSION_DIR"] = str(session_dir)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+
+    stdout_log_path = run_dir / "stdout.jsonl"
+    stderr_log_path = run_dir / "stderr.log"
+
+    stdout_f = open(stdout_log_path, "w", encoding="utf-8", errors="replace")
+    stderr_f = open(stderr_log_path, "w", encoding="utf-8", errors="replace")
+
+    start_mono = time.monotonic()
+    timed_out = False
+
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(workspace_dir),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            errors="replace",
+            bufsize=1,
+            process_group=0,
+            env=env,
+        )
+    except Exception as e:
+        collector.status = "BLOCKED"
+        collector.failures.append(f"Failed to spawn worker process: {e}")
+        collector.end_time = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        stdout_f.close()
+        stderr_f.close()
+        return collector
+
+    def read_stdout():
+        try:
+            for line in iter(proc.stdout.readline, ""):
+                stdout_f.write(line)
+                stdout_f.flush()
+                line_str = line.strip()
+                if line_str.startswith("{") and line_str.endswith("}"):
+                    try:
+                        ev = json.loads(line_str)
+                        collector.process_event(ev)
+                    except json.JSONDecodeError:
+                        pass
+        except Exception:
+            pass
+        finally:
+            proc.stdout.close()
+
+    def read_stderr():
+        try:
+            for line in iter(proc.stderr.readline, ""):
+                stderr_f.write(line)
+                stderr_f.flush()
+        except Exception:
+            pass
+        finally:
+            proc.stderr.close()
+
+    t_out = threading.Thread(target=read_stdout, daemon=True)
+    t_err = threading.Thread(target=read_stderr, daemon=True)
+    t_out.start()
+    t_err.start()
+
+    # Wait with timeout
+    try:
+        proc.wait(timeout=timeout_sec)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        collector.termination_reason = "timeout"
+        collector.failures.append(f"Process timed out after {timeout_sec} seconds")
+        # Graceful SIGTERM to process group
+        try:
+            pgid = os.getpgid(proc.pid)
+            os.killpg(pgid, signal.SIGTERM)
+            proc.wait(timeout=10)
+        except Exception:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except Exception:
+                pass
+
+    t_out.join(timeout=5)
+    t_err.join(timeout=5)
+    stdout_f.close()
+    stderr_f.close()
+
+    end_mono = time.monotonic()
+    collector.duration_sec = end_mono - start_mono
+    collector.end_time = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    collector.exit_code = proc.returncode
+
+    if not timed_out:
+        if proc.returncode == 0:
+            collector.termination_reason = "completed"
+        else:
+            collector.termination_reason = "nonzero_exit"
+            collector.failures.append(f"Process exited with non-zero code {proc.returncode}")
+
+    if collector.agent_settled_aborted:
+        collector.failures.append("Session was aborted (agent_settled aborted=true)")
+    if collector.assistant_stop_reason == "error":
+        collector.failures.append("Assistant message ended with stopReason='error'")
+
+    # Run Independent Evaluator
+    eval_res = {}
+    if task_id == "task-1":
+        eval_res = evaluate_task_1(str(workspace_dir))
+    elif task_id == "task-2":
+        eval_res = evaluate_task_2(str(workspace_dir))
+
+    # Record eval outputs
+    collector.self_test_passed = eval_res.get("self_tests_passed", False)
+    collector.self_test_output = eval_res.get("self_tests_output", "")
+    collector.independent_test_passed = eval_res.get("external_tests_passed", False)
+    collector.independent_total = eval_res.get("external_total", 0)
+    collector.independent_passed = eval_res.get("external_passed", 0)
+    collector.output_file = eval_res.get("expected_filename")
+    collector.output_file_sha256 = eval_res.get("deliverable_sha256")
+    collector.line_count = eval_res.get("line_count", 0)
+
+    if eval_res.get("failures"):
+        collector.failures.extend(eval_res["failures"])
+
+    # Determine status
+    if timed_out:
+        collector.status = "TIMEOUT"
+    elif proc.returncode != 0:
+        collector.status = "FAIL"
+    elif eval_res.get("overall_passed"):
+        collector.status = "PASS"
+    else:
+        collector.status = "FAIL"
+
+    # Persist run evaluation and telemetry
+    atomic_write_json(run_dir / "eval.json", eval_res)
+    atomic_write_json(run_dir / "telemetry.json", collector.to_dict())
+
+    return collector
+
+
+def generate_reports(results: List[dict]):
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    # 1. Manifest
+    manifest = {
+        "benchmark_id": "pi-token-bench-" + datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%M%S"),
+        "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "total_runs": len(results),
+        "completed_runs": len([r for r in results if r["status"] in ("PASS", "FAIL", "TIMEOUT")]),
+        "passed_runs": len([r for r in results if r["status"] == "PASS"]),
+        "failed_runs": len([r for r in results if r["status"] in ("FAIL", "TIMEOUT")]),
+        "runs": results,
+    }
+    atomic_write_json(RESULTS_DIR / "manifest.json", manifest)
+
+    # 2. Benchmark Results JSON with Profile Aggregations
+    profiles = ["A", "B", "C", "D"]
+    profile_summary = {}
+
+    for p in profiles:
+        p_runs = [r for r in results if r["profile"] == p]
+        tot_inp = sum(r["input_tokens"] for r in p_runs)
+        tot_out = sum(r["output_tokens"] for r in p_runs)
+        tot_cr = sum(r["cache_read_tokens"] for r in p_runs)
+        tot_cw = sum(r["cache_write_tokens"] for r in p_runs)
+        tot_tok = sum(r["total_tokens"] for r in p_runs)
+        tot_cost = sum(r["estimated_cost"] for r in p_runs)
+        tot_dur = sum(r["duration_sec"] for r in p_runs)
+        passed_cnt = sum(1 for r in p_runs if r["status"] == "PASS")
+        total_cnt = len(p_runs)
+        cost_per_pass = (tot_cost / passed_cnt) if passed_cnt > 0 else None
+
+        profile_summary[p] = {
+            "profile_name": PROFILE_NAMES.get(p, p),
+            "runs_count": total_cnt,
+            "passed_count": passed_cnt,
+            "pass_rate_pct": round((passed_cnt / total_cnt * 100), 1) if total_cnt > 0 else 0.0,
+            "total_input_tokens": tot_inp,
+            "total_output_tokens": tot_out,
+            "total_cache_read_tokens": tot_cr,
+            "total_cache_write_tokens": tot_cw,
+            "total_tokens": tot_tok,
+            "total_cost": round(tot_cost, 6),
+            "total_duration_sec": round(tot_dur, 2),
+            "cost_per_successful_task": round(cost_per_pass, 6) if cost_per_pass is not None else None,
+            "runs": [r["run_id"] for r in p_runs],
+        }
+
+    # Relative to Baseline A
+    baseline_a = profile_summary.get("A", {})
+    base_cost = baseline_a.get("total_cost", 0.0)
+    base_inp = baseline_a.get("total_input_tokens", 0)
+    base_out = baseline_a.get("total_output_tokens", 0)
+    base_tok = baseline_a.get("total_tokens", 0)
+
+    for p in profiles:
+        summary = profile_summary[p]
+        if base_cost > 0:
+            summary["cost_reduction_pct_vs_A"] = round(((base_cost - summary["total_cost"]) / base_cost) * 100, 2)
+        if base_inp > 0:
+            summary["input_reduction_pct_vs_A"] = round(((base_inp - summary["total_input_tokens"]) / base_inp) * 100, 2)
+        if base_out > 0:
+            summary["output_reduction_pct_vs_A"] = round(((base_out - summary["total_output_tokens"]) / base_out) * 100, 2)
+        if base_tok > 0:
+            summary["total_tokens_reduction_pct_vs_A"] = round(((base_tok - summary["total_tokens"]) / base_tok) * 100, 2)
+
+    rtk_gain = query_rtk_gain()
+
+    full_results_data = {
+        "manifest": manifest,
+        "profile_aggregations": profile_summary,
+        "rtk_gain_telemetry": rtk_gain,
+        "individual_runs": results,
+    }
+    atomic_write_json(RESULTS_DIR / "benchmark-results.json", full_results_data)
+
+    # 3. CSV export
+    csv_path = RESULTS_DIR / "benchmark-results.csv"
+    with open(csv_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow([
+            "Run",
+            "Task",
+            "Profile",
+            "Status",
+            "SelfTestsPassed",
+            "ExternalTests",
+            "InputTokens",
+            "OutputTokens",
+            "CacheReadTokens",
+            "CacheWriteTokens",
+            "TotalTokens",
+            "EstimatedCost",
+            "DurationSec",
+            "ToolCalls",
+            "ToolErrors",
+            "OutputSHA256",
+        ])
+        for r in results:
+            tool_call_str = ";".join(f"{k}:{v}" for k, v in r.get("tool_calls", {}).items())
+            ext_str = f"{r.get('independent_passed', 0)}/{r.get('independent_total', 0)}"
+            writer.writerow([
+                r["run_id"],
+                r["task_id"],
+                r["profile"],
+                r["status"],
+                r["self_test_passed"],
+                ext_str,
+                r["input_tokens"],
+                r["output_tokens"],
+                r["cache_read_tokens"],
+                r["cache_write_tokens"],
+                r["total_tokens"],
+                r["estimated_cost"],
+                r["duration_sec"],
+                tool_call_str,
+                r["tool_errors"],
+                r.get("output_file_sha256") or "N/A",
+            ])
+
+    # 4. Markdown Report BENCHMARK_REPORT.md
+    md_lines = [
+        "# Pi Token Optimization Benchmark Report",
+        "",
+        f"**Date:** {datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}  ",
+        "**Environment:** CachyOS (Arch Linux) | Pi 1.4.0 | Python 3.11+  ",
+        "**Pinned Harness:** Model: `openai-codex/gpt-6-luna` | Thinking: `max` | MCP: `disabled` | Tools: `read,bash,edit,write,subagent`  ",
+        "",
+        "---",
+        "",
+        "## 1. Executive Summary & Results Table",
+        "",
+        "| Task | Profile | Tests | Input | Output | Cache Read | Cost | Duration | Tool Calls | Status |",
+        "|---|---|---|---|---|---|---|---|---|---|",
+    ]
+
+    for r in results:
+        task_label = "Task 1" if r["task_id"] == "task-1" else "Task 2"
+        ext_status = f"{r.get('independent_passed', 0)}/{r.get('independent_total', 0)}"
+        t_calls = sum(r.get("tool_calls", {}).values())
+        md_lines.append(
+            f"| {task_label} | {r['profile']} | {ext_status} | "
+            f"{r['input_tokens']:,} | {r['output_tokens']:,} | {r['cache_read_tokens']:,} | "
+            f"${r['estimated_cost']:.4f} | {r['duration_sec']:.1f}s | {t_calls} | **{r['status']}** |"
+        )
+
+    md_lines.extend([
+        "",
+        "---",
+        "",
+        "## 2. Profile Aggregates & Comparative Analysis",
+        "",
+        "| Profile | Name | Tasks Passed | Pass Rate | Total Tokens | Input Tokens | Output Tokens | Cache Read | Total Cost | Duration | Cost/Task | Cost Red. vs A |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|",
+    ])
+
+    for p in profiles:
+        s = profile_summary[p]
+        cost_task = f"${s['cost_per_successful_task']:.4f}" if s['cost_per_successful_task'] is not None else "N/A"
+        red_pct = f"{s.get('cost_reduction_pct_vs_A', 0.0):+.1f}%" if p != "A" else "0.0% (ref)"
+        md_lines.append(
+            f"| {p} | {s['profile_name']} | {s['passed_count']}/{s['runs_count']} | "
+            f"{s['pass_rate_pct']:.0f}% | {s['total_tokens']:,} | {s['total_input_tokens']:,} | "
+            f"{s['total_output_tokens']:,} | {s['total_cache_read_tokens']:,} | "
+            f"${s['total_cost']:.4f} | {s['total_duration_sec']:.1f}s | {cost_task} | {red_pct} |"
+        )
+
+    md_lines.extend([
+        "",
+        "### Relative Reduction Metrics vs Baseline (Profile A)",
+        "",
+        "| Metric | Profile B (Ponytail) | Profile C (Combined Lite) | Profile D (Optimized + RTK) |",
+        "|---|---|---|---|",
+        f"| **Input Token Reduction** | {profile_summary['B'].get('input_reduction_pct_vs_A', 0):+.2f}% | {profile_summary['C'].get('input_reduction_pct_vs_A', 0):+.2f}% | {profile_summary['D'].get('input_reduction_pct_vs_A', 0):+.2f}% |",
+        f"| **Output Token Reduction** | {profile_summary['B'].get('output_reduction_pct_vs_A', 0):+.2f}% | {profile_summary['C'].get('output_reduction_pct_vs_A', 0):+.2f}% | {profile_summary['D'].get('output_reduction_pct_vs_A', 0):+.2f}% |",
+        f"| **Total Token Reduction** | {profile_summary['B'].get('total_tokens_reduction_pct_vs_A', 0):+.2f}% | {profile_summary['C'].get('total_tokens_reduction_pct_vs_A', 0):+.2f}% | {profile_summary['D'].get('total_tokens_reduction_pct_vs_A', 0):+.2f}% |",
+        f"| **Cost Reduction** | {profile_summary['B'].get('cost_reduction_pct_vs_A', 0):+.2f}% | {profile_summary['C'].get('cost_reduction_pct_vs_A', 0):+.2f}% | {profile_summary['D'].get('cost_reduction_pct_vs_A', 0):+.2f}% |",
+        "",
+        "---",
+        "",
+        "## 3. RTK Compression Telemetry (Profile D)",
+        "",
+        "RTK interceptor savings are reported separately from provider-reported tokens to avoid conflating shell command compression with LLM context pricing:",
+        "",
+    ])
+
+    if rtk_gain and "summary" in rtk_gain:
+        r_sum = rtk_gain["summary"]
+        md_lines.extend([
+            f"- **Total Intercepted Commands:** {r_sum.get('total_commands', 0)}",
+            f"- **Raw CLI Output Chars/Bytes:** {r_sum.get('total_input', 0):,}",
+            f"- **Filtered Output to Context:** {r_sum.get('total_output', 0):,}",
+            f"- **Estimated Tokens Saved by RTK:** {r_sum.get('total_saved', 0):,}",
+            f"- **Average Output Reduction:** {r_sum.get('avg_savings_pct', 0.0):.1f}%",
+        ])
+    else:
+        md_lines.append("- *No RTK tracking records detected in isolated XDG data store.*")
+
+    md_lines.extend([
+        "",
+        "---",
+        "",
+        "## 4. Deliverable Artifacts & Code Verification",
+        "",
+        "| Run | Target File | Line Count | SHA-256 | Self-Test | External Test |",
+        "|---|---|---|---|---|---|",
+    ])
+
+    for r in results:
+        sha_short = (r.get("output_file_sha256") or "N/A")[:12] + "..." if r.get("output_file_sha256") else "N/A"
+        st = "PASS" if r["self_test_passed"] else "FAIL"
+        ext = f"{r.get('independent_passed', 0)}/{r.get('independent_total', 0)}"
+        md_lines.append(
+            f"| {r['run_id']} | `{r.get('output_file') or 'N/A'}` | {r.get('line_count', 0)} | `{sha_short}` | {st} | {ext} |"
+        )
+
+    md_lines.extend([
+        "",
+        "---",
+        "",
+        "## 5. Methodological Notes & Exploratory Nature",
+        "",
+        "1. **Exploratory Scope:** This initial run evaluates one repetition per task/profile (N=1). Results are exploratory rather than statistically definitive. Variance across reasoning trajectories is typical for high-thinking models.",
+        "2. **Cache Reads vs Context Occupancy:** Provider-reported cache read tokens reflect prompt prefix caching hits, not context window saturation.",
+        "3. **Zero Contamination:** All runs executed in strictly isolated task directories with byte-identical canonical task prompts and clean session stores.",
+        "",
+        "---",
+        "",
+        "## 6. Profile Recommendations (Correctness First, Cost Second)",
+        "",
+    ])
+
+    # Determine recommended profile
+    # Order: highest pass rate, then lowest cost per pass, then lowest total cost
+    sorted_profiles = sorted(
+        profiles,
+        key=lambda p: (
+            -profile_summary[p]["pass_rate_pct"],
+            profile_summary[p]["cost_per_successful_task"] if profile_summary[p]["cost_per_successful_task"] is not None else float("inf"),
+            profile_summary[p]["total_cost"]
+        )
+    )
+    winner = sorted_profiles[0]
+    winner_name = profile_summary[winner]["profile_name"]
+
+    winner_cost_task = (
+        f"${profile_summary[winner]['cost_per_successful_task']:.4f}"
+        if profile_summary[winner]['cost_per_successful_task'] is not None
+        else "N/A"
+    )
+
+    md_lines.extend([
+        f"**Recommended Profile:** **Profile {winner} ({winner_name})**",
+        "",
+        f"- **Correctness:** {profile_summary[winner]['passed_count']}/{profile_summary[winner]['runs_count']} tasks passed ({profile_summary[winner]['pass_rate_pct']:.0f}% pass rate).",
+        f"- **Cost per Successful Task:** {winner_cost_task} (Total cost: ${profile_summary[winner]['total_cost']:.4f}).",
+        f"- **Cost Reduction vs Baseline A:** {profile_summary[winner].get('cost_reduction_pct_vs_A', 0.0):+.2f}%.",
+        "",
+    ])
+
+    atomic_write_text(RESULTS_DIR / "BENCHMARK_REPORT.md", "\n".join(md_lines) + "\n")
+
+
+def cmd_dry_run():
+    print("======================================================================")
+    print("  Pi Token Benchmark Orchestrator — Dry Run & Preflight Verification")
+    print("======================================================================")
+
+    all_passed = True
+
+    def check(desc, condition, err=""):
+        nonlocal all_passed
+        if condition:
+            print(f"  [PASS] {desc}")
+        else:
+            print(f"  [FAIL] {desc}: {err}")
+            all_passed = False
+
+    # 1. Directories
+    check("Benchmark root directory exists", BENCH_ROOT.is_dir())
+    check("Prompt directory exists", PROMPTS_DIR.is_dir())
+    check("Evaluation directory exists", EVAL_DIR.is_dir())
+    check("Task 1 prompt exists", (PROMPTS_DIR / "task-1.md").is_file())
+    check("Task 2 prompt exists", (PROMPTS_DIR / "task-2.md").is_file())
+
+    # 2. Workspaces empty
+    for r in RUN_CONFIGS:
+        ws = BENCH_ROOT / r["workspace"]
+        exists = ws.is_dir()
+        count = len(list(ws.iterdir())) if exists else -1
+        check(f"Workspace {r['workspace']} exists & is empty", exists and count == 0, f"found {count} items")
+
+    # 3. Launchers dry-run
+    env = os.environ.copy()
+    env["BENCH_DRY_RUN"] = "1"
+    for profile in ["a", "b", "c", "d"]:
+        launcher = BENCH_ROOT / f"bench-{profile}"
+        ws = BENCH_ROOT / f"task-1/test-config-{profile}"
+        proc = subprocess.run([str(launcher), str(ws)], capture_output=True, text=True, env=env)
+        check(f"Launcher bench-{profile} dry run", proc.returncode == 0, proc.stderr)
+
+    # 4. Evaluators functional
+    check("Task 1 evaluator loadable", evaluate_task_1 is not None)
+    check("Task 2 evaluator loadable", evaluate_task_2 is not None)
+
+    # 5. Pi CLI
+    pi_proc = subprocess.run(["pi", "--version"], capture_output=True, text=True)
+    check(f"Pi CLI operational ({pi_proc.stdout.strip()})", pi_proc.returncode == 0)
+
+    print("======================================================================")
+    if all_passed:
+        print("  [SUCCESS] All preflight checks passed. Orchestrator ready for --run.")
+        sys.exit(0)
+    else:
+        print("  [ERROR] One or more preflight checks failed.")
+        sys.exit(1)
+
+
+def cmd_status():
+    manifest_path = RESULTS_DIR / "manifest.json"
+    if not manifest_path.is_file():
+        print("No benchmark execution manifest found at", manifest_path)
+        print("Run with --run to execute the benchmark.")
+        return
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    print("===================================================================================================")
+    print(f"  Pi Token Optimization Benchmark Status (ID: {manifest.get('benchmark_id')})")
+    print(f"  Completed: {manifest.get('completed_runs')}/{manifest.get('total_runs')} | Passed: {manifest.get('passed_runs')} | Failed: {manifest.get('failed_runs')}")
+    print("===================================================================================================")
+    print(f"{'Run':<8} {'Task':<8} {'Profile':<10} {'Status':<10} {'ExtTests':<10} {'Cost':<10} {'Tokens':<10} {'Duration':<10}")
+    print("-" * 85)
+
+    for r in manifest.get("runs", []):
+        ext = f"{r.get('independent_passed', 0)}/{r.get('independent_total', 0)}"
+        cost = f"${r.get('estimated_cost', 0):.4f}"
+        tok = f"{r.get('total_tokens', 0):,}"
+        dur = f"{r.get('duration_sec', 0):.1f}s"
+        print(f"{r['run_id']:<8} {r['task_id']:<8} {r['profile']:<10} {r['status']:<10} {ext:<10} {cost:<10} {tok:<10} {dur:<10}")
+    print("===================================================================================================")
+
+
+def cmd_run(resume_mode: bool = False, retry_run_id: Optional[str] = None, timeout_sec: int = 900):
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    RUNS_DIR.mkdir(parents=True, exist_ok=True)
+
+    print("======================================================================")
+    print("  Pi Autonomous Headless Benchmark Orchestrator")
+    print("  Starting 8 Independent Pi Sessions (gpt-6-luna:max, openai-codex)")
+    print(f"  Mode: {'RETRY ' + retry_run_id if retry_run_id else ('RESUME' if resume_mode else 'FULL RUN')}")
+    print("======================================================================")
+
+    # Load existing telemetry if resuming or retrying
+    existing_results: Dict[str, dict] = {}
+    manifest_path = RESULTS_DIR / "manifest.json"
+    if manifest_path.is_file():
+        try:
+            m = json.loads(manifest_path.read_text(encoding="utf-8"))
+            for r in m.get("runs", []):
+                existing_results[r["run_id"]] = r
+        except Exception:
+            pass
+
+    results_list: List[dict] = []
+
+    for idx, run_cfg in enumerate(RUN_CONFIGS, 1):
+        run_id = run_cfg["run_id"]
+        task_label = "Task 1" if run_cfg["task"] == "task-1" else "Task 2"
+        profile = run_cfg["profile"]
+
+        # Check retry-failed selection
+        if retry_run_id and run_id != retry_run_id:
+            if run_id in existing_results:
+                results_list.append(existing_results[run_id])
+            continue
+
+        # Check resume condition
+        if resume_mode and not retry_run_id:
+            if run_id in existing_results and existing_results[run_id].get("status") in ("PASS", "FAIL"):
+                r_prev = existing_results[run_id]
+                print(f"[{idx}/8] {task_label} {profile} | SKIPPED (Resume: {r_prev.get('status')})")
+                results_list.append(r_prev)
+                continue
+
+        # If retrying a specific run, archive previous attempt
+        if retry_run_id and run_id == retry_run_id:
+            prev_dir = RUNS_DIR / run_id
+            if prev_dir.is_dir():
+                attempt_archive = prev_dir / f"attempt-prev-{int(time.time())}"
+                attempt_archive.mkdir(parents=True, exist_ok=True)
+                for item in prev_dir.iterdir():
+                    if item.name.startswith("attempt-"):
+                        continue
+                    try:
+                        shutil.move(str(item), str(attempt_archive / item.name))
+                    except Exception:
+                        pass
+
+        # Execute worker
+        collector = run_benchmark_worker(run_cfg, timeout_sec=timeout_sec)
+        run_data = collector.to_dict()
+        results_list.append(run_data)
+
+        # Print compact live progress line
+        ext_summary = f"{run_data.get('independent_passed', 0)}/{run_data.get('independent_total', 0)}"
+        print(
+            f"[{idx}/8] {task_label} {profile} | {run_data['status']} | "
+            f"cost=${run_data['estimated_cost']:.4f} | tokens={run_data['total_tokens']:,} | "
+            f"time={run_data['duration_sec']:.1f}s | tests={ext_summary}"
+        )
+
+        # Incrementally update reports
+        generate_reports(results_list)
+
+    print("======================================================================")
+    print("  Benchmark Run Complete!")
+    print(f"  Results saved to: {RESULTS_DIR}")
+    print(f"  Report generated: {RESULTS_DIR / 'BENCHMARK_REPORT.md'}")
+    print("======================================================================")
+
+
+def cmd_reevaluate():
+    print("======================================================================")
+    print("  Re-evaluating Generated Deliverables Across All 8 Runs")
+    print("======================================================================")
+    results_list = []
+    for idx, run_cfg in enumerate(RUN_CONFIGS, 1):
+        run_id = run_cfg["run_id"]
+        task_id = run_cfg["task"]
+        profile = run_cfg["profile"]
+        ws_dir = BENCH_ROOT / run_cfg["workspace"]
+        run_dir = RUNS_DIR / run_id
+        telemetry_file = run_dir / "telemetry.json"
+
+        if not telemetry_file.is_file():
+            print(f"[{idx}/8] {run_id}: No telemetry found, skipping")
+            continue
+
+        run_data = json.loads(telemetry_file.read_text(encoding="utf-8"))
+
+        if task_id == "task-1":
+            eval_res = evaluate_task_1(str(ws_dir))
+        else:
+            eval_res = evaluate_task_2(str(ws_dir))
+
+        atomic_write_json(run_dir / "eval.json", eval_res)
+
+        run_data["self_test_passed"] = eval_res.get("self_tests_passed", False)
+        run_data["self_test_output"] = eval_res.get("self_tests_output", "")
+        run_data["independent_test_passed"] = eval_res.get("external_tests_passed", False)
+        run_data["independent_total"] = eval_res.get("external_total", 0)
+        run_data["independent_passed"] = eval_res.get("external_passed", 0)
+        run_data["output_file"] = eval_res.get("expected_filename")
+        run_data["output_file_sha256"] = eval_res.get("deliverable_sha256")
+        run_data["line_count"] = eval_res.get("line_count", 0)
+        run_data["failures"] = eval_res.get("failures", [])
+
+        if run_data.get("termination_reason") == "timeout":
+            run_data["status"] = "TIMEOUT"
+        elif run_data.get("exit_code") != 0:
+            run_data["status"] = "FAIL"
+        elif eval_res.get("overall_passed"):
+            run_data["status"] = "PASS"
+        else:
+            run_data["status"] = "FAIL"
+
+        atomic_write_json(telemetry_file, run_data)
+        results_list.append(run_data)
+
+        ext_summary = f"{run_data.get('independent_passed', 0)}/{run_data.get('independent_total', 0)}"
+        print(f"[{idx}/8] {task_id} {profile} | {run_data['status']} | tests={ext_summary} | lines={run_data['line_count']}")
+
+    generate_reports(results_list)
+    print("======================================================================")
+    print("  Re-evaluation Complete & Reports Updated!")
+    print("======================================================================")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Deterministic Headless Pi Benchmark Orchestrator")
+    parser.add_argument("--dry-run", action="store_true", help="Perform preflight verification without paid calls")
+    parser.add_argument("--run", action="store_true", help="Execute all 8 benchmark sessions sequentially")
+    parser.add_argument("--status", action="store_true", help="Show current execution and evaluation status")
+    parser.add_argument("--resume", action="store_true", help="Skip completed runs and execute pending runs")
+    parser.add_argument("--retry-failed", type=str, metavar="RUN_ID", help="Retry a specific failed run (e.g. run-03)")
+    parser.add_argument("--re-evaluate", action="store_true", help="Re-run evaluators on existing run artifacts and refresh reports")
+    parser.add_argument("--timeout", type=int, default=900, help="Per-worker timeout in seconds (default: 900)")
+
+    args = parser.parse_args()
+
+    if args.dry_run:
+        cmd_dry_run()
+    elif args.status:
+        cmd_status()
+    elif args.re_evaluate:
+        cmd_reevaluate()
+    elif args.resume:
+        cmd_run(resume_mode=True, timeout_sec=args.timeout)
+    elif args.retry_failed:
+        cmd_run(resume_mode=False, retry_run_id=args.retry_failed, timeout_sec=args.timeout)
+    elif args.run:
+        cmd_run(resume_mode=False, timeout_sec=args.timeout)
+    else:
+        parser.print_help()
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

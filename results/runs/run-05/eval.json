@@ -1,0 +1,16 @@
+{
+  "task": "task-2",
+  "target_dir": "/home/khoa/pi-token-bench/task-2/test-config-a",
+  "expected_filename": "task-2-test-config-a.py",
+  "deliverable_exists": true,
+  "single_deliverable": true,
+  "deliverable_sha256": "d79d17b9977ad71e116c9d7fd879df9cdfe220dd66b98be6b2cac2c297733ff9",
+  "line_count": 398,
+  "self_tests_passed": true,
+  "self_tests_output": "test_cancellation_cleanup (__main__.RunDagTests.test_cancellation_cleanup) ... ok\ntest_concurrency_limit_enforcement (__main__.RunDagTests.test_concurrency_limit_enforcement) ... ok\ntest_dependency_ordering (__main__.RunDagTests.test_dependency_ordering) ... ok\ntest_diamond_graph_execution (__main__.RunDagTests.test_diamond_graph_execution) ... ok\ntest_empty_graph (__main__.RunDagTests.test_empty_graph) ... ok\ntest_failure_propagation (__main__.RunDagTests.test_failure_propagation) ... ok\ntest_graph_validation_precedes_worker_invocation (__main__.RunDagTests.test_graph_validation_precedes_worker_invocation) ... ok\ntest_independent_branches_continue_after_failure (__main__.RunDagTests.test_independent_branches_continue_after_failure) ... ok\ntest_stable_return_order (__main__.RunDagTests.test_stable_return_order) ... ok\n\n----------------------------------------------------------------------\nRan 9 tests in 0.013s\n\nOK",
+  "external_tests_passed": true,
+  "external_total": 8,
+  "external_passed": 8,
+  "failures": [],
+  "overall_passed": true
+}

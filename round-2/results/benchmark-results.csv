@@ -1,0 +1,13 @@
+Run,Task,Repetition,Profile,Status,PublicTests,HiddenTests,InputTokens,OutputTokens,CacheReadTokens,CacheWriteTokens,TotalTokens,EstimatedCost,DurationSec,ToolCalls,ToolErrors,ArtifactFile,SHA256
+run-01,task-3,1,A,PASS,PASS,18/18,62167,8197,47744,0,118108,0.010793,111.62,bash:6;read:9;edit:2,1,task-3-test-config-a-r1.py,80f0abf8e95b72ca76d56128c7fbe9cd9ede27ed7cb1939e1127ca3d5f93040a
+run-02,task-3,1,C,PASS,PASS,18/18,38382,8058,107648,0,154088,0.008944,111.18,bash:7;read:9;edit:2,2,task-3-test-config-c-r1.py,8641c8e1bb82e10721901484cc04a9b0e0e7192b20485869ad3fcb33a24414e0
+run-03,task-3,2,C,PASS,PASS,18/18,28399,10092,142592,0,181083,0.009312,173.32,bash:9;read:9;edit:2,2,task-3-test-config-c-r2.py,ca1fe67b79a1c4e6912bd34f6b8b3b6a5a050366f2f7c0d310f3ddcc812a41d5
+run-04,task-3,2,A,PASS,PASS,18/18,28107,7456,67584,0,103147,0.007215,103.95,bash:6;read:9;write:1,2,task-3-test-config-a-r2.py,f72dee8ca9dc50d14617bf424ec97c9f5fde1ddeae7337e8442433c14ddbcd93
+run-05,task-3,3,A,PASS,PASS,18/18,45106,10975,55040,0,111121,0.010548,147.16,bash:6;read:9;write:1,1,task-3-test-config-a-r3.py,ddf07629e3bb9a42c9ebe12476feb543f66f30624e61e16d1bc96e3de1f026a4
+run-06,task-3,3,C,PASS,PASS,18/18,43773,12865,145664,0,202302,0.012266,144.76,bash:8;read:9;edit:3;write:1,2,task-3-test-config-c-r3.py,19cf36a2e4756c1de7be861d526a6f40e02a5dc04188917149653fe24c38276b
+run-07,task-4,1,C,PASS,PASS,18/18,40181,10371,66176,0,116728,0.009865,155.84,bash:6;read:8;write:1;edit:1,1,task-4-test-config-c-r1.py,687a07ebd0b7d991507502313c7dd26e461e3fb61a6f090f0f3ae6645d58585c
+run-08,task-4,1,A,PASS,PASS,18/18,27778,9022,92416,0,129216,0.008213,115.71,bash:7;read:8;edit:2,1,task-4-test-config-a-r1.py,d96890e45326a552c6b5fe0e5e8901adc5e67e4a7ce52360b22b2cbd6288bd42
+run-09,task-4,2,A,PASS,PASS,18/18,30766,9755,86016,0,126537,0.008814,131.66,bash:5;read:9;edit:2,1,task-4-test-config-a-r2.py,216a3b9c243e7242561f61bbcc49c306b215debe00b6931efe3657f0e08b07cf
+run-10,task-4,2,C,PASS,PASS,18/18,38117,8106,82944,0,129167,0.008694,116.55,bash:6;read:8;write:1;edit:2,1,task-4-test-config-c-r2.py,b720f80ecda17a551b68be0005863420b175dbc351f5c63db0dd0d90e3a7b530
+run-11,task-4,3,C,PASS,PASS,18/18,39907,11046,39936,0,90889,0.009913,141.68,bash:7;read:8;edit:2,1,task-4-test-config-c-r3.py,1c82a5578a5c580f889a3e552fd56edb60c15873a5072e497f6331c04fb9f739
+run-12,task-4,3,A,PASS,PASS,18/18,23890,10466,72960,0,107316,0.008352,114.48,bash:5;read:7;write:1;edit:1,1,task-4-test-config-a-r3.py,0f6ab3238c33bcb489605d31f8f6d7d632a19d7189897d41ab1bfa95f119e8c8
