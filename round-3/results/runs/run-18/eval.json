@@ -1,0 +1,17 @@
+{
+  "task": "task-3",
+  "workspace_dir": "/home/khoa/pi-token-bench/round-3/workspaces/task-3/repeat-2/test-config-c",
+  "target_file": "src/reservations.py",
+  "target_exists": true,
+  "single_file_modified": true,
+  "unexpected_modifications": [],
+  "line_count": 166,
+  "sha256": "f510d2bec5de18465f342779039602df78b3515e441333241cae61b050275042",
+  "public_tests_passed": true,
+  "public_tests_output": "........\n----------------------------------------------------------------------\nRan 8 tests in 0.055s\n\nOK",
+  "hidden_tests_passed": true,
+  "hidden_total": 18,
+  "hidden_passed": 18,
+  "failures": [],
+  "status": "PASS"
+}

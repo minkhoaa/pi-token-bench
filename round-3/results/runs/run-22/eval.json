@@ -1,0 +1,17 @@
+{
+  "task": "task-4",
+  "workspace_dir": "/home/khoa/pi-token-bench/round-3/workspaces/task-4/repeat-2/test-config-u4",
+  "target_file": "src/indexer.py",
+  "target_exists": true,
+  "single_file_modified": true,
+  "unexpected_modifications": [],
+  "line_count": 97,
+  "sha256": "23b03003a617a1ad5374f83799ff7642ac10dcf23da08a68171e6cdc3ba5a6d9",
+  "public_tests_passed": true,
+  "public_tests_output": ".......\n----------------------------------------------------------------------\nRan 7 tests in 0.003s\n\nOK",
+  "hidden_tests_passed": true,
+  "hidden_total": 18,
+  "hidden_passed": 18,
+  "failures": [],
+  "status": "PASS"
+}

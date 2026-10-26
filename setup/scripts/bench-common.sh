@@ -114,8 +114,69 @@ case "${PROFILE}" in
     HEADROOM_STATE="ON"
     ;;
 
+  U1|u1)
+    PROFILE_NAME="U1 — Ponytail Ultra"
+    PONYTAIL_STATE="ULTRA"
+    CAVEMAN_STATE="OFF"
+    RTK_STATE="OFF"
+    HEADROOM_STATE="OFF"
+    export RTK_DISABLED=1
+    PI_ARGS+=(
+      "--append-system-prompt" "${BENCH_ROOT}/round-3/profiles/ponytail-ultra.md"
+    )
+    ;;
+
+  U2|u2)
+    PROFILE_NAME="U2 — Caveman Ultra"
+    PONYTAIL_STATE="OFF"
+    CAVEMAN_STATE="ULTRA"
+    RTK_STATE="OFF"
+    HEADROOM_STATE="OFF"
+    export RTK_DISABLED=1
+    PI_ARGS+=(
+      "--append-system-prompt" "${BENCH_ROOT}/round-3/profiles/caveman-ultra.md"
+    )
+    ;;
+
+  U3|u3)
+    PROFILE_NAME="U3 — Combined Ultra"
+    PONYTAIL_STATE="ULTRA"
+    CAVEMAN_STATE="ULTRA"
+    RTK_STATE="OFF"
+    HEADROOM_STATE="OFF"
+    export RTK_DISABLED=1
+    PI_ARGS+=(
+      "--append-system-prompt" "${BENCH_ROOT}/round-3/profiles/combined-ultra.md"
+    )
+    ;;
+
+  U4|u4)
+    PROFILE_NAME="U4 — Combined Ultra + RTK"
+    PONYTAIL_STATE="ULTRA"
+    CAVEMAN_STATE="ULTRA"
+    RTK_STATE="ON"
+    HEADROOM_STATE="OFF"
+    export RTK_DISABLED=0
+    export PATH="${BIN_DIR}:${PATH}"
+    export XDG_DATA_HOME="${SETUP_DIR}/.local/share"
+    PI_ARGS+=(
+      "--append-system-prompt" "${BENCH_ROOT}/round-3/profiles/combined-ultra.md"
+      "-e" "${EXTENSIONS_DIR}/rtk.ts"
+    )
+    ;;
+
+  U5|u5)
+    PROFILE_NAME="U5 — All Optimizers Experimental"
+    if [[ "${BENCH_U5_ALLOWED:-0}" != "1" ]]; then
+      echo "Error: Profile U5 is marked UNSUPPORTED for openai-codex subscription authentication."
+      echo "To force experimental attempt, set BENCH_U5_ALLOWED=1."
+      exit 1
+    fi
+    HEADROOM_STATE="ON"
+    ;;
+
   *)
-    echo "Error: Unknown profile '${PROFILE}'. Valid profiles: A, B, C, D, E"
+    echo "Error: Unknown profile '${PROFILE}'. Valid profiles: A, B, C, D, E, U1, U2, U3, U4, U5"
     exit 1
     ;;
 esac

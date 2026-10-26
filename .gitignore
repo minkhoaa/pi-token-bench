@@ -12,8 +12,19 @@ __pycache__/
 *.db-shm
 *.tmp.*
 
-# Isolated local data store
+# Isolated local data store and sessions
 setup/.local/
+setup/sessions/
+
+# Benchmark runtime transcripts and raw logs
+*.jsonl
+*.log
+round-3/results/runs/*/stdout.jsonl
+round-3/results/runs/*/stderr.log
+round-2/results/runs/*/stdout.jsonl
+round-2/results/runs/*/stderr.log
+results/runs/*/stdout.jsonl
+results/runs/*/stderr.log
 
 # OS artifacts
 .DS_Store

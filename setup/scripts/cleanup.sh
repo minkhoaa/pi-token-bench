@@ -77,11 +77,11 @@ if [[ -f "${MANIFEST}" ]]; then
   echo "  Includes:"
   echo "    - Isolated bin:          ${BENCH_ROOT}/setup/bin (rtk binary)"
   echo "    - Isolated extensions:   ${BENCH_ROOT}/setup/extensions (rtk.ts)"
-  echo "    - Isolated profiles:     ${BENCH_ROOT}/setup/profiles (ponytail-lite.md, caveman-lite.md, combined-lite.md)"
+  echo "    - Isolated profiles:     ${BENCH_ROOT}/setup/profiles, ${BENCH_ROOT}/round-3/profiles"
   echo "    - Isolated python venv:  ${BENCH_ROOT}/setup/venv-headroom"
   echo "    - Isolated sessions:     ${BENCH_ROOT}/setup/sessions"
-  echo "    - Launchers & symlinks:  ${BENCH_ROOT}/bench-{a,b,c,d,e}, ${BENCH_ROOT}/cleanup"
-  echo "    - Task workspaces:       ${BENCH_ROOT}/task-{1,2}/test-config-{a,b,c,d}"
+  echo "    - Launchers & symlinks:  ${BENCH_ROOT}/bench-{a,b,c,d,e,u1,u2,u3,u4,u5}, ${BENCH_ROOT}/cleanup"
+  echo "    - Task workspaces:       ${BENCH_ROOT}/task-{1,2}/test-config-{a,b,c,d}, ${BENCH_ROOT}/round-2/workspaces, ${BENCH_ROOT}/round-3/workspaces"
 else
   echo "  Notice: Manifest not found; targeting ${BENCH_ROOT}"
 fi

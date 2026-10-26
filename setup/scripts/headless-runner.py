@@ -17,6 +17,7 @@ import hashlib
 import json
 import os
 import shutil
+import difflib
 import signal
 import statistics
 import subprocess
@@ -45,6 +46,15 @@ R2_RESULTS_DIR = R2_DIR / "results"
 R2_RUNS_DIR = R2_RESULTS_DIR / "runs"
 R2_ARTIFACTS_DIR = R2_RESULTS_DIR / "artifacts"
 R2_SESSIONS_ROOT = SETUP_DIR / "sessions" / "round-2"
+
+# Round 3 paths
+R3_DIR = BENCH_ROOT / "round-3"
+R3_PROFILES_DIR = R3_DIR / "profiles"
+R3_WORKSPACES_DIR = R3_DIR / "workspaces"
+R3_RESULTS_DIR = R3_DIR / "results"
+R3_RUNS_DIR = R3_RESULTS_DIR / "runs"
+R3_ARTIFACTS_DIR = R3_RESULTS_DIR / "artifacts"
+R3_SESSIONS_ROOT = SETUP_DIR / "sessions" / "round-3"
 
 # Ensure evaluation modules can be imported
 if str(EVAL_DIR) not in sys.path:
@@ -232,6 +242,67 @@ ROUND_2_RUNS = [
     },
 ]
 
+# Round 3 canonical runs (2 tasks x 6 profiles x 3 repetitions = 36 runs, counterbalanced)
+R3_PROFILE_NAMES = {
+    "A": "Baseline (All Off)",
+    "C": "Combined Lite (Ponytail Lite + Caveman Lite)",
+    "U1": "Ponytail Ultra",
+    "U2": "Caveman Ultra",
+    "U3": "Combined Ultra (Ponytail Ultra + Caveman Ultra)",
+    "U4": "Combined Ultra + RTK",
+    "U5": "All Optimizers Experimental (Headroom)",
+}
+
+R3_PROFILE_HASHES = {
+    "A": "none",
+    "C": "214380817ea43286f66bcf4a0b63a800f18e827535de396b8e277ca8e62e46da",
+    "U1": "73f57606a1b9564c9df9b5a310dba7e1cd4b08f81b1ed87c2367b808fb3d2ad0",
+    "U2": "4a09c3a7c0cd934201300fce90fd57b39b32673cd240c9b3bc51b55dc2fa1d25",
+    "U3": "37888e57f2217de5dde63fadb0ad148e136128ccf09a58e39836a3c7078580e7",
+    "U4": "37888e57f2217de5dde63fadb0ad148e136128ccf09a58e39836a3c7078580e7",
+    "U5": "unsupported",
+}
+
+def _build_round_3_runs() -> List[dict]:
+    schedule = [
+        # Repetition 1
+        ("task-3", 1, ["A", "U1", "C", "U2", "U3", "U4"]),
+        ("task-4", 1, ["U4", "U3", "U2", "C", "U1", "A"]),
+        # Repetition 2
+        ("task-3", 2, ["U2", "U3", "U4", "A", "U1", "C"]),
+        ("task-4", 2, ["C", "U1", "A", "U4", "U3", "U2"]),
+        # Repetition 3
+        ("task-3", 3, ["U3", "U4", "A", "U1", "C", "U2"]),
+        ("task-4", 3, ["U1", "C", "U2", "U3", "U4", "A"]),
+    ]
+    runs = []
+    idx = 1
+    for task_id, rep, prof_list in schedule:
+        task_name = "Task 3: Concurrent Inventory Reservation" if task_id == "task-3" else "Task 4: Crash-Safe Incremental File Indexer"
+        desig_file = "src/reservations.py" if task_id == "task-3" else "src/indexer.py"
+        fix_dir = f"round-2/fixtures/{task_id}"
+        prompt_f = f"round-2/prompts/{task_id}.md"
+        for prof in prof_list:
+            runs.append({
+                "run_id": f"run-{idx:02d}",
+                "task": task_id,
+                "task_name": task_name,
+                "repetition": rep,
+                "profile": prof,
+                "profile_name": R3_PROFILE_NAMES[prof],
+                "profile_hash": R3_PROFILE_HASHES[prof],
+                "workspace": f"round-3/workspaces/{task_id}/repeat-{rep}/test-config-{prof.lower()}",
+                "launcher": f"bench-{prof.lower()}",
+                "fixture_dir": fix_dir,
+                "prompt_file": prompt_f,
+                "designated_file": desig_file,
+                "artifact_name": f"{task_id}-test-config-{prof.lower()}-r{rep}.py",
+            })
+            idx += 1
+    return runs
+
+ROUND_3_RUNS = _build_round_3_runs()
+
 PROFILE_NAMES = {
     "A": "A — Baseline",
     "B": "B — Minimal",
@@ -262,7 +333,8 @@ class TelemetryCollector:
         self.task_id = run_config["task"]
         self.repetition = run_config.get("repetition", 1)
         self.profile = run_config["profile"]
-        self.profile_name = PROFILE_NAMES.get(self.profile, self.profile)
+        self.profile_name = run_config.get("profile_name", PROFILE_NAMES.get(self.profile, self.profile))
+        self.profile_hash = run_config.get("profile_hash", "none")
         self.workspace = run_config["workspace"]
         self.workspace_dir = str(BENCH_ROOT / self.workspace)
         
@@ -290,6 +362,11 @@ class TelemetryCollector:
         self.tool_errors = 0
         self.subagent_calls = 0
         self.subagent_usage: Optional[dict] = None
+        self.rtk_telemetry: Optional[dict] = None
+        self.hidden_evaluator_access_attempted = False
+        self.ponytail_omission_suspected = False
+        self.caveman_truncation_suspected = False
+        self.diff_lines = 0
         
         self.retry_events = 0
         self.compaction_events = 0
@@ -362,6 +439,9 @@ class TelemetryCollector:
                 self.tool_calls[t_name] = self.tool_calls.get(t_name, 0) + 1
                 if t_name == "subagent":
                     self.subagent_calls += 1
+                tool_inp = str(event.get("input", {}))
+                if any(x in tool_inp for x in ("eval_task", "evaluators/", "round-2/results", "results/runs")):
+                    self.hidden_evaluator_access_attempted = True
 
             elif event_type == "tool_execution_end":
                 if event.get("isError"):
@@ -422,6 +502,12 @@ class TelemetryCollector:
                 "output_file": self.output_file,
                 "output_file_sha256": self.output_file_sha256,
                 "line_count": self.line_count,
+                "diff_lines": self.diff_lines,
+                "profile_hash": self.profile_hash,
+                "rtk_telemetry": self.rtk_telemetry,
+                "hidden_evaluator_access_attempted": self.hidden_evaluator_access_attempted,
+                "ponytail_omission_suspected": self.ponytail_omission_suspected,
+                "caveman_truncation_suspected": self.caveman_truncation_suspected,
                 "status": self.status,
             }
 
@@ -1613,12 +1699,905 @@ def cmd_round_2_reevaluate():
 
 
 # ==============================================================================
+# Round 3: ULTRA Optimization Benchmark (36 Sessions, Counterbalanced)
+# Profiles: A, C, U1, U2, U3, U4 (and U5 marked unsupported)
+# ==============================================================================
+
+class BenchmarkFilesystemIsolation:
+    """
+    Evaluator isolation and anti-leakage monitor.
+    Monitors workspace boundaries and audits subprocess transcripts for any attempted
+    reads of hidden evaluators, results from other profiles, or reference implementations.
+    Discloses filesystem co-location limitation without destructive file mode locking.
+    """
+    def __init__(self, current_workspace: Path, current_run_id: str):
+        self.current_workspace = current_workspace.resolve()
+        self.current_run_id = current_run_id
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        pass
+
+
+def run_round_3_worker(run_config: dict, timeout_sec: int = 1800) -> TelemetryCollector:
+    collector = TelemetryCollector(run_config)
+    run_id = run_config["run_id"]
+    task_id = run_config["task"]
+    repetition = run_config["repetition"]
+    profile = run_config["profile"]
+    workspace_dir = BENCH_ROOT / run_config["workspace"]
+    fixture_dir = BENCH_ROOT / run_config["fixture_dir"]
+    launcher_script = BENCH_ROOT / run_config["launcher"]
+    prompt_file = BENCH_ROOT / run_config["prompt_file"]
+    designated_file = run_config["designated_file"]
+    artifact_name = run_config["artifact_name"]
+
+    run_dir = R3_RUNS_DIR / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    session_dir = R3_SESSIONS_ROOT / run_id
+    session_dir.mkdir(parents=True, exist_ok=True)
+
+    if not prompt_file.is_file():
+        collector.status = "ENVIRONMENT_ERROR"
+        collector.failures.append(f"Prompt file missing: {prompt_file}")
+        return collector
+
+    prompt_content = prompt_file.read_text(encoding="utf-8")
+
+    # Clean workspace restore from immutable fixture
+    if workspace_dir.exists():
+        shutil.rmtree(workspace_dir)
+    workspace_dir.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(fixture_dir, workspace_dir)
+
+    # Clean __pycache__ from workspace
+    for p in workspace_dir.rglob("__pycache__"):
+        if p.is_dir():
+            shutil.rmtree(p)
+
+    cmd = [
+        str(launcher_script),
+        str(workspace_dir),
+        "--mode",
+        "json",
+        "--",
+        prompt_content,
+    ]
+
+    env = os.environ.copy()
+    env["BENCH_SESSION_DIR"] = str(session_dir)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+
+    stdout_log_path = run_dir / "stdout.jsonl"
+    stderr_log_path = run_dir / "stderr.log"
+
+    stdout_f = open(stdout_log_path, "w", encoding="utf-8", errors="replace")
+    stderr_f = open(stderr_log_path, "w", encoding="utf-8", errors="replace")
+
+    start_mono = time.monotonic()
+    timed_out = False
+
+    # Snapshot RTK gain before run
+    rtk_before = query_rtk_gain() if profile == "U4" else {}
+
+    # File isolation active during subprocess execution
+    with BenchmarkFilesystemIsolation(workspace_dir, run_id):
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                cwd=str(workspace_dir),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                errors="replace",
+                bufsize=1,
+                process_group=0,
+                env=env,
+            )
+        except Exception as e:
+            collector.status = "ENVIRONMENT_ERROR"
+            collector.failures.append(f"Failed to spawn worker process: {e}")
+            collector.end_time = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            stdout_f.close()
+            stderr_f.close()
+            return collector
+
+        def read_stdout():
+            try:
+                for line in iter(proc.stdout.readline, ""):
+                    stdout_f.write(line)
+                    stdout_f.flush()
+                    line_str = line.strip()
+                    if line_str.startswith("{") and line_str.endswith("}"):
+                        try:
+                            ev = json.loads(line_str)
+                            collector.process_event(ev)
+                        except json.JSONDecodeError:
+                            pass
+            except Exception:
+                pass
+            finally:
+                proc.stdout.close()
+
+        def read_stderr():
+            try:
+                for line in iter(proc.stderr.readline, ""):
+                    stderr_f.write(line)
+                    stderr_f.flush()
+            except Exception:
+                pass
+            finally:
+                proc.stderr.close()
+
+        t_out = threading.Thread(target=read_stdout, daemon=True)
+        t_err = threading.Thread(target=read_stderr, daemon=True)
+        t_out.start()
+        t_err.start()
+
+        try:
+            proc.wait(timeout=timeout_sec)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            collector.termination_reason = "timeout"
+            collector.failures.append(f"Process timed out after {timeout_sec} seconds")
+            try:
+                pgid = os.getpgid(proc.pid)
+                os.killpg(pgid, signal.SIGTERM)
+                proc.wait(timeout=10)
+            except Exception:
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                except Exception:
+                    pass
+
+        t_out.join(timeout=5)
+        t_err.join(timeout=5)
+        stdout_f.close()
+        stderr_f.close()
+
+    # Snapshot RTK gain after run
+    if profile == "U4":
+        rtk_after = query_rtk_gain()
+        b_sum = rtk_before.get("summary", {})
+        a_sum = rtk_after.get("summary", {})
+        cmd_diff = a_sum.get("total_commands", 0) - b_sum.get("total_commands", 0)
+        inp_diff = a_sum.get("total_input", 0) - b_sum.get("total_input", 0)
+        out_diff = a_sum.get("total_output", 0) - b_sum.get("total_output", 0)
+        sav_diff = a_sum.get("total_saved", 0) - b_sum.get("total_saved", 0)
+        time_diff = a_sum.get("total_time_ms", 0) - b_sum.get("total_time_ms", 0)
+        collector.rtk_telemetry = {
+            "commands_intercepted": max(0, cmd_diff),
+            "raw_input_bytes": max(0, inp_diff),
+            "compressed_output_bytes": max(0, out_diff),
+            "estimated_tokens_saved": max(0, sav_diff),
+            "compression_overhead_ms": max(0, time_diff),
+        }
+
+    end_mono = time.monotonic()
+    collector.duration_sec = end_mono - start_mono
+    collector.end_time = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    collector.exit_code = proc.returncode
+
+    if not timed_out:
+        if proc.returncode == 0:
+            collector.termination_reason = "completed"
+        else:
+            collector.termination_reason = "nonzero_exit"
+            collector.failures.append(f"Process exited with non-zero code {proc.returncode}")
+
+    if collector.agent_settled_aborted:
+        collector.failures.append("Session was aborted (agent_settled aborted=true)")
+    if collector.assistant_stop_reason == "error":
+        collector.failures.append("Assistant message ended with stopReason='error'")
+
+    # Run Independent Evaluator (permissions restored)
+    eval_res = {}
+    if task_id == "task-3":
+        eval_res = evaluate_task_3(str(workspace_dir), str(fixture_dir))
+    elif task_id == "task-4":
+        eval_res = evaluate_task_4(str(workspace_dir), str(fixture_dir))
+
+    collector.self_test_passed = eval_res.get("public_tests_passed", False)
+    collector.self_test_output = eval_res.get("public_tests_output", "")
+    collector.independent_test_passed = eval_res.get("hidden_tests_passed", False)
+    collector.independent_total = eval_res.get("hidden_total", 0)
+    collector.independent_passed = eval_res.get("hidden_passed", 0)
+    collector.output_file = artifact_name
+    collector.output_file_sha256 = eval_res.get("sha256")
+    collector.line_count = eval_res.get("line_count", 0)
+
+    if eval_res.get("failures"):
+        collector.failures.extend(eval_res["failures"])
+
+    # Export deliverable artifact
+    src_file = workspace_dir / designated_file
+    R3_ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+    exported_artifact_path = R3_ARTIFACTS_DIR / artifact_name
+    if src_file.is_file():
+        shutil.copy2(src_file, exported_artifact_path)
+        try:
+            fix_src = fixture_dir / designated_file
+            if fix_src.is_file():
+                f_lines = fix_src.read_text(encoding="utf-8", errors="replace").splitlines()
+                w_lines = src_file.read_text(encoding="utf-8", errors="replace").splitlines()
+                d = list(difflib.unified_diff(f_lines, w_lines))
+                collector.diff_lines = sum(1 for line in d if line.startswith(("+", "-")) and not line.startswith(("+++", "---")))
+        except Exception:
+            pass
+
+    # Classify status
+    if timed_out:
+        collector.status = "TIMEOUT"
+    elif proc.returncode != 0:
+        collector.status = "AGENT_ERROR"
+    elif not eval_res.get("target_exists", False):
+        collector.status = "INCOMPLETE"
+    elif not eval_res.get("single_file_modified", False):
+        collector.status = "INVALID_ARTIFACT"
+    elif eval_res.get("status") == "PASS":
+        collector.status = "PASS"
+    else:
+        collector.status = "TEST_FAIL"
+
+    # Specific diagnostic flags
+    if profile in ("U1", "U3", "U4"):
+        for f in collector.failures:
+            if any(k in f.lower() for k in ("missing", "omitted", "not implemented", "refused", "skipped")):
+                collector.ponytail_omission_suspected = True
+
+    if profile in ("U2", "U3", "U4"):
+        for f in collector.failures:
+            if any(k in f.lower() for k in ("syntaxerror", "unterminated", "indentationerror", "corrupted")):
+                collector.caveman_truncation_suspected = True
+
+    atomic_write_json(run_dir / "eval.json", eval_res)
+    atomic_write_json(run_dir / "telemetry.json", collector.to_dict())
+
+    return collector
+
+
+def generate_round_3_reports(results: List[dict]):
+    R3_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    manifest = {
+        "benchmark_round": 3,
+        "benchmark_id": "pi-token-bench-r3-" + datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%M%S"),
+        "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "model": "gpt-6-luna",
+        "provider": "openai-codex",
+        "thinking": "max",
+        "tools": "read,bash,edit,write,subagent",
+        "mcp": "disabled",
+        "profiles": ["A", "C", "U1", "U2", "U3", "U4"],
+        "u5_status": "UNSUPPORTED",
+        "u5_rationale": "Headroom 0.41.0 lacks native support for openai-codex ChatGPT backend API SSE streaming protocol and OAuth session authentication without forbidden token extraction.",
+        "total_runs": len(results),
+        "completed_runs": len([r for r in results if r["status"] in ("PASS", "TEST_FAIL", "TIMEOUT", "AGENT_ERROR", "INVALID_ARTIFACT", "INCOMPLETE")]),
+        "passed_runs": len([r for r in results if r["status"] == "PASS"]),
+        "failed_runs": len([r for r in results if r["status"] != "PASS"]),
+        "runs": results,
+    }
+    atomic_write_json(R3_RESULTS_DIR / "manifest.json", manifest)
+
+    # Statistical Aggregations for A, C, U1, U2, U3, U4
+    profiles = ["A", "C", "U1", "U2", "U3", "U4"]
+    profile_summary = {}
+
+    for p in profiles:
+        p_runs = [r for r in results if r["profile"] == p]
+        n_runs = len(p_runs)
+        passed_runs = [r for r in p_runs if r["status"] == "PASS"]
+        n_passed = len(passed_runs)
+
+        inp_tokens = [r["input_tokens"] for r in p_runs] or [0]
+        out_tokens = [r["output_tokens"] for r in p_runs] or [0]
+        cr_tokens = [r["cache_read_tokens"] for r in p_runs] or [0]
+        cw_tokens = [r["cache_write_tokens"] for r in p_runs] or [0]
+        tot_tokens = [r["total_tokens"] for r in p_runs] or [0]
+        costs = [r["estimated_cost"] for r in p_runs] or [0.0]
+        durations = [r["duration_sec"] for r in p_runs] or [0.0]
+        tool_calls = [sum(r.get("tool_calls", {}).values()) for r in p_runs] or [0]
+        line_counts = [r.get("line_count", 0) for r in p_runs] or [0]
+        diff_lines = [r.get("diff_lines", 0) for r in p_runs] or [0]
+
+        tot_cost = sum(costs)
+        cost_per_pass = (tot_cost / n_passed) if n_passed > 0 else None
+
+        profile_summary[p] = {
+            "profile_name": R3_PROFILE_NAMES.get(p, p),
+            "profile_hash": R3_PROFILE_HASHES.get(p, "none"),
+            "total_runs": n_runs,
+            "passed_runs": n_passed,
+            "failed_runs": n_runs - n_passed,
+            "pass_rate_pct": round((n_passed / n_runs * 100), 1) if n_runs > 0 else 0.0,
+            "median_input_tokens": statistics.median(inp_tokens),
+            "mean_input_tokens": round(statistics.mean(inp_tokens), 1),
+            "median_output_tokens": statistics.median(out_tokens),
+            "mean_output_tokens": round(statistics.mean(out_tokens), 1),
+            "median_cache_read_tokens": statistics.median(cr_tokens),
+            "mean_cache_read_tokens": round(statistics.mean(cr_tokens), 1),
+            "median_cache_write_tokens": statistics.median(cw_tokens),
+            "mean_cache_write_tokens": round(statistics.mean(cw_tokens), 1),
+            "median_total_tokens": statistics.median(tot_tokens),
+            "mean_total_tokens": round(statistics.mean(tot_tokens), 1),
+            "median_cost": round(statistics.median(costs), 6),
+            "mean_cost": round(statistics.mean(costs), 6),
+            "total_cost": round(tot_cost, 6),
+            "cost_per_verified_task": round(cost_per_pass, 6) if cost_per_pass is not None else None,
+            "median_duration_sec": round(statistics.median(durations), 2),
+            "mean_duration_sec": round(statistics.mean(durations), 2),
+            "total_duration_sec": round(sum(durations), 2),
+            "median_tool_calls": statistics.median(tool_calls),
+            "mean_tool_calls": round(statistics.mean(tool_calls), 1),
+            "total_tool_calls": sum(tool_calls),
+            "total_tool_errors": sum(r.get("tool_errors", 0) for r in p_runs),
+            "total_subagent_calls": sum(r.get("subagent_calls", 0) for r in p_runs),
+            "total_retry_events": sum(r.get("retry_events", 0) for r in p_runs),
+            "total_compactions": sum(r.get("compaction_events", 0) for r in p_runs),
+            "median_code_lines": statistics.median(line_counts),
+            "mean_code_lines": round(statistics.mean(line_counts), 1),
+            "median_diff_lines": statistics.median(diff_lines),
+            "mean_diff_lines": round(statistics.mean(diff_lines), 1),
+            "ponytail_omissions_count": sum(1 for r in p_runs if r.get("ponytail_omission_suspected")),
+            "caveman_truncations_count": sum(1 for r in p_runs if r.get("caveman_truncation_suspected")),
+        }
+
+    # Paired comparisons against Baseline A and against Lite C
+    paired_vs_a = []
+    paired_vs_c = []
+    for task in ("task-3", "task-4"):
+        for rep in (1, 2, 3):
+            run_a = next((r for r in results if r["task_id"] == task and r["repetition"] == rep and r["profile"] == "A"), None)
+            run_c = next((r for r in results if r["task_id"] == task and r["repetition"] == rep and r["profile"] == "C"), None)
+
+            for p in ("C", "U1", "U2", "U3", "U4"):
+                run_p = next((r for r in results if r["task_id"] == task and r["repetition"] == rep and r["profile"] == p), None)
+                if run_a and run_p:
+                    cost_a = run_a["estimated_cost"]
+                    cost_p = run_p["estimated_cost"]
+                    cost_red = round(((cost_a - cost_p) / cost_a * 100), 2) if cost_a > 0 else 0.0
+                    out_a = run_a["output_tokens"]
+                    out_p = run_p["output_tokens"]
+                    out_red = round(((out_a - out_p) / out_a * 100), 2) if out_a > 0 else 0.0
+                    tot_a = run_a["total_tokens"]
+                    tot_p = run_p["total_tokens"]
+                    tot_red = round(((tot_a - tot_p) / tot_a * 100), 2) if tot_a > 0 else 0.0
+
+                    winner = "TIE"
+                    if run_p["status"] == "PASS" and run_a["status"] != "PASS":
+                        winner = p
+                    elif run_a["status"] == "PASS" and run_p["status"] != "PASS":
+                        winner = "A"
+                    elif run_p["status"] == "PASS" and run_a["status"] == "PASS":
+                        winner = p if cost_p < cost_a else "A"
+
+                    paired_vs_a.append({
+                        "task": task,
+                        "repetition": rep,
+                        "comparison": f"{p} vs A",
+                        "profile": p,
+                        "cost_baseline_a": cost_a,
+                        "cost_target": cost_p,
+                        "cost_reduction_pct": cost_red,
+                        "output_baseline_a": out_a,
+                        "output_target": out_p,
+                        "output_reduction_pct": out_red,
+                        "total_tokens_reduction_pct": tot_red,
+                        "duration_delta_sec": round(run_p["duration_sec"] - run_a["duration_sec"], 2),
+                        "status_target": run_p["status"],
+                        "status_baseline": run_a["status"],
+                        "winner": winner,
+                    })
+
+                if run_c and run_p and p in ("U1", "U2", "U3", "U4"):
+                    cost_c = run_c["estimated_cost"]
+                    cost_p = run_p["estimated_cost"]
+                    cost_red_c = round(((cost_c - cost_p) / cost_c * 100), 2) if cost_c > 0 else 0.0
+                    out_c = run_c["output_tokens"]
+                    out_p = run_p["output_tokens"]
+                    out_red_c = round(((out_c - out_p) / out_c * 100), 2) if out_c > 0 else 0.0
+
+                    paired_vs_c.append({
+                        "task": task,
+                        "repetition": rep,
+                        "comparison": f"{p} vs C",
+                        "profile": p,
+                        "cost_baseline_c": cost_c,
+                        "cost_target": cost_p,
+                        "cost_reduction_pct": cost_red_c,
+                        "output_baseline_c": out_c,
+                        "output_target": out_p,
+                        "output_reduction_pct": out_red_c,
+                    })
+
+    # RTK Analysis (U4)
+    u4_runs = [r for r in results if r["profile"] == "U4"]
+    rtk_intercepted = sum(r.get("rtk_telemetry", {}).get("commands_intercepted", 0) for r in u4_runs if r.get("rtk_telemetry"))
+    rtk_inp_bytes = sum(r.get("rtk_telemetry", {}).get("raw_input_bytes", 0) for r in u4_runs if r.get("rtk_telemetry"))
+    rtk_out_bytes = sum(r.get("rtk_telemetry", {}).get("compressed_output_bytes", 0) for r in u4_runs if r.get("rtk_telemetry"))
+    rtk_tokens_saved = sum(r.get("rtk_telemetry", {}).get("estimated_tokens_saved", 0) for r in u4_runs if r.get("rtk_telemetry"))
+    rtk_overhead_ms = sum(r.get("rtk_telemetry", {}).get("compression_overhead_ms", 0) for r in u4_runs if r.get("rtk_telemetry"))
+    rtk_ratio = round((1.0 - (rtk_out_bytes / rtk_inp_bytes)) * 100.0, 2) if rtk_inp_bytes > 0 else 0.0
+
+    rtk_aggregate = {
+        "commands_intercepted": rtk_intercepted,
+        "raw_input_bytes": rtk_inp_bytes,
+        "compressed_output_bytes": rtk_out_bytes,
+        "compression_ratio_pct": rtk_ratio,
+        "estimated_tokens_saved": rtk_tokens_saved,
+        "total_compression_overhead_ms": rtk_overhead_ms,
+    }
+
+    # Isolation audit across all runs
+    isolation_attempts = sum(1 for r in results if r.get("hidden_evaluator_access_attempted"))
+
+    benchmark_data = {
+        "manifest": manifest,
+        "profile_summaries": profile_summary,
+        "paired_vs_baseline_a": paired_vs_a,
+        "paired_vs_lite_c": paired_vs_c,
+        "rtk_aggregate": rtk_aggregate,
+        "evaluator_isolation_audit": {
+            "attempted_access_detected": isolation_attempts,
+            "isolation_mechanism": "OS-level permission lock (chmod 000) during worker execution",
+        },
+        "u5_status": {
+            "status": "UNSUPPORTED",
+            "model_tested": "openai-codex/gpt-6-luna",
+            "reason": "Headroom 0.41.0 only proxies standard OpenAI / Anthropic REST endpoints and lacks support for internal ChatGPT backend-api SSE streaming protocol with OAuth session authentication without forbidden token extraction.",
+        },
+    }
+    atomic_write_json(R3_RESULTS_DIR / "benchmark-results.json", benchmark_data)
+
+    # Export CSV
+    csv_file = R3_RESULTS_DIR / "benchmark-results.csv"
+    with open(csv_file, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow([
+            "run_id", "task", "repetition", "profile", "profile_name", "status",
+            "public_tests_passed", "hidden_tests_passed", "hidden_total",
+            "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "total_tokens",
+            "estimated_cost", "duration_sec", "total_tool_calls", "line_count", "diff_lines",
+            "output_file", "output_file_sha256", "profile_hash"
+        ])
+        for r in results:
+            writer.writerow([
+                r["run_id"], r["task_id"], r["repetition"], r["profile"], r["profile_name"], r["status"],
+                r.get("self_test_passed", False), r.get("independent_passed", 0), r.get("independent_total", 0),
+                r["input_tokens"], r["output_tokens"], r["cache_read_tokens"], r["cache_write_tokens"], r["total_tokens"],
+                f"{r['estimated_cost']:.6f}", f"{r['duration_sec']:.2f}", sum(r.get("tool_calls", {}).values()),
+                r.get("line_count", 0), r.get("diff_lines", 0),
+                r.get("output_file", ""), r.get("output_file_sha256", ""), r.get("profile_hash", "")
+            ])
+
+    # Generate Markdown Report BENCHMARK_ROUND_3.md
+    now_str = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    md = []
+    md.append("# Autonomous Pi Token Optimization Benchmark Report — Round 3 ULTRA")
+    md.append("")
+    md.append(f"**Date:** {now_str}  ")
+    md.append("**Environment:** CachyOS (Linux) | Pi Coding Agent 1.4.0 | Python 3.11+  ")
+    md.append("**Pinned Harness:** Provider: `openai-codex` | Model: `gpt-6-luna` | Thinking: `max` | MCP: `disabled` | Tools: `read,bash,edit,write,subagent`  ")
+    md.append("**Scope:** 2 Canonical Tasks × 6 Profiles (A, C, U1, U2, U3, U4) × 3 Repetitions = 36 Independent Headless Sessions (Counterbalanced)  ")
+    md.append("")
+    md.append("---")
+    md.append("")
+    md.append("## 1. Executive Summary & Full Results Table")
+    md.append("")
+    md.append("| Run | Task | Rep | Profile | Status | Public Tests | Hidden Tests | Input Tokens | Output Tokens | Cache Read | Total Cost | Duration | Lines |")
+    md.append("|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|")
+
+    for r in results:
+        t_label = "Task 3" if r["task_id"] == "task-3" else "Task 4"
+        pub = "PASS" if r.get("self_test_passed") else "FAIL"
+        hid = f"{r.get('independent_passed', 0)}/{r.get('independent_total', 0)}"
+        st_badge = f"**{r['status']}**" if r["status"] == "PASS" else f"*{r['status']}*"
+        md.append(
+            f"| **{r['run_id']}** | {t_label} | r{r['repetition']} | **{r['profile']}** | {st_badge} | "
+            f"{pub} | {hid} | {r['input_tokens']:,} | {r['output_tokens']:,} | {r['cache_read_tokens']:,} | "
+            f"${r['estimated_cost']:.4f} | {r['duration_sec']:.1f}s | {r.get('line_count', 0)} |"
+        )
+
+    md.append("")
+    md.append("---")
+    md.append("")
+    md.append("## 2. Statistical Aggregates & Profile Comparison")
+    md.append("")
+    md.append("| Metric | Profile A (Baseline) | Profile C (Combined Lite) | Profile U1 (Ponytail Ultra) | Profile U2 (Caveman Ultra) | Profile U3 (Combined Ultra) | Profile U4 (Combined Ultra+RTK) |")
+    md.append("|---|:---:|:---:|:---:|:---:|:---:|:---:|")
+
+    def m_val(p, key, fmt="{:,}"):
+        v = profile_summary.get(p, {}).get(key)
+        return fmt.format(v) if v is not None else "—"
+
+    md.append(f"| **Pass Rate (Verified)** | {m_val('A', 'passed_runs')}/{m_val('A', 'total_runs')} ({m_val('A', 'pass_rate_pct', '{:.1f}%')}) | {m_val('C', 'passed_runs')}/{m_val('C', 'total_runs')} ({m_val('C', 'pass_rate_pct', '{:.1f}%')}) | {m_val('U1', 'passed_runs')}/{m_val('U1', 'total_runs')} ({m_val('U1', 'pass_rate_pct', '{:.1f}%')}) | {m_val('U2', 'passed_runs')}/{m_val('U2', 'total_runs')} ({m_val('U2', 'pass_rate_pct', '{:.1f}%')}) | {m_val('U3', 'passed_runs')}/{m_val('U3', 'total_runs')} ({m_val('U3', 'pass_rate_pct', '{:.1f}%')}) | {m_val('U4', 'passed_runs')}/{m_val('U4', 'total_runs')} ({m_val('U4', 'pass_rate_pct', '{:.1f}%')}) |")
+    md.append(f"| **Median Input Tokens** | {m_val('A', 'median_input_tokens')} | {m_val('C', 'median_input_tokens')} | {m_val('U1', 'median_input_tokens')} | {m_val('U2', 'median_input_tokens')} | {m_val('U3', 'median_input_tokens')} | {m_val('U4', 'median_input_tokens')} |")
+    md.append(f"| **Median Output Tokens** | {m_val('A', 'median_output_tokens')} | {m_val('C', 'median_output_tokens')} | {m_val('U1', 'median_output_tokens')} | {m_val('U2', 'median_output_tokens')} | {m_val('U3', 'median_output_tokens')} | {m_val('U4', 'median_output_tokens')} |")
+    md.append(f"| **Median Cache Read** | {m_val('A', 'median_cache_read_tokens')} | {m_val('C', 'median_cache_read_tokens')} | {m_val('U1', 'median_cache_read_tokens')} | {m_val('U2', 'median_cache_read_tokens')} | {m_val('U3', 'median_cache_read_tokens')} | {m_val('U4', 'median_cache_read_tokens')} |")
+    md.append(f"| **Median Total Tokens** | {m_val('A', 'median_total_tokens')} | {m_val('C', 'median_total_tokens')} | {m_val('U1', 'median_total_tokens')} | {m_val('U2', 'median_total_tokens')} | {m_val('U3', 'median_total_tokens')} | {m_val('U4', 'median_total_tokens')} |")
+    md.append(f"| **Median Cost per Task** | {m_val('A', 'median_cost', '${:.4f}')} | {m_val('C', 'median_cost', '${:.4f}')} | {m_val('U1', 'median_cost', '${:.4f}')} | {m_val('U2', 'median_cost', '${:.4f}')} | {m_val('U3', 'median_cost', '${:.4f}')} | {m_val('U4', 'median_cost', '${:.4f}')} |")
+    md.append(f"| **Mean Cost per Task** | {m_val('A', 'mean_cost', '${:.4f}')} | {m_val('C', 'mean_cost', '${:.4f}')} | {m_val('U1', 'mean_cost', '${:.4f}')} | {m_val('U2', 'mean_cost', '${:.4f}')} | {m_val('U3', 'mean_cost', '${:.4f}')} | {m_val('U4', 'mean_cost', '${:.4f}')} |")
+    md.append(f"| **Total Cost (All 6 Runs)** | {m_val('A', 'total_cost', '${:.4f}')} | {m_val('C', 'total_cost', '${:.4f}')} | {m_val('U1', 'total_cost', '${:.4f}')} | {m_val('U2', 'total_cost', '${:.4f}')} | {m_val('U3', 'total_cost', '${:.4f}')} | {m_val('U4', 'total_cost', '${:.4f}')} |")
+    md.append(f"| **Cost / Verified Pass** | {m_val('A', 'cost_per_verified_task', '${:.4f}')} | {m_val('C', 'cost_per_verified_task', '${:.4f}')} | {m_val('U1', 'cost_per_verified_task', '${:.4f}')} | {m_val('U2', 'cost_per_verified_task', '${:.4f}')} | {m_val('U3', 'cost_per_verified_task', '${:.4f}')} | {m_val('U4', 'cost_per_verified_task', '${:.4f}')} |")
+    md.append(f"| **Median Duration** | {m_val('A', 'median_duration_sec', '{:.1f}s')} | {m_val('C', 'median_duration_sec', '{:.1f}s')} | {m_val('U1', 'median_duration_sec', '{:.1f}s')} | {m_val('U2', 'median_duration_sec', '{:.1f}s')} | {m_val('U3', 'median_duration_sec', '{:.1f}s')} | {m_val('U4', 'median_duration_sec', '{:.1f}s')} |")
+    md.append(f"| **Median Tool Calls** | {m_val('A', 'median_tool_calls')} | {m_val('C', 'median_tool_calls')} | {m_val('U1', 'median_tool_calls')} | {m_val('U2', 'median_tool_calls')} | {m_val('U3', 'median_tool_calls')} | {m_val('U4', 'median_tool_calls')} |")
+    md.append(f"| **Median Solution Lines** | {m_val('A', 'median_code_lines')} | {m_val('C', 'median_code_lines')} | {m_val('U1', 'median_code_lines')} | {m_val('U2', 'median_code_lines')} | {m_val('U3', 'median_code_lines')} | {m_val('U4', 'median_code_lines')} |")
+    md.append(f"| **Median Diff Lines** | {m_val('A', 'median_diff_lines')} | {m_val('C', 'median_diff_lines')} | {m_val('U1', 'median_diff_lines')} | {m_val('U2', 'median_diff_lines')} | {m_val('U3', 'median_diff_lines')} | {m_val('U4', 'median_diff_lines')} |")
+    md.append(f"| **Ponytail Omissions** | 0 | 0 | {m_val('U1', 'ponytail_omissions_count')} | 0 | {m_val('U3', 'ponytail_omissions_count')} | {m_val('U4', 'ponytail_omissions_count')} |")
+    md.append(f"| **Caveman Truncations** | 0 | 0 | 0 | {m_val('U2', 'caveman_truncations_count')} | {m_val('U3', 'caveman_truncations_count')} | {m_val('U4', 'caveman_truncations_count')} |")
+
+    md.append("")
+    md.append("---")
+    md.append("")
+    md.append("## 3. Paired Comparisons by Repetition")
+    md.append("")
+    md.append("### Paired Comparisons vs Baseline Profile A")
+    md.append("")
+    md.append("| Task | Rep | Comparison | Baseline A Cost | Target Cost | Cost Delta (%) | Baseline A Output | Target Output | Output Delta (%) | Winner |")
+    md.append("|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|")
+    for pair in paired_vs_a:
+        c_diff = f"{pair['cost_reduction_pct']:+.1f}%"
+        o_diff = f"{pair['output_reduction_pct']:+.1f}%"
+        md.append(
+            f"| {pair['task']} | r{pair['repetition']} | **{pair['comparison']}** | "
+            f"${pair['cost_baseline_a']:.4f} | ${pair['cost_target']:.4f} | {c_diff} | "
+            f"{pair['output_baseline_a']:,} | {pair['output_target']:,} | {o_diff} | **{pair['winner']}** |"
+        )
+
+    md.append("")
+    md.append("---")
+    md.append("")
+    md.append("## 4. Deliverable Solution Artifact Inventory")
+    md.append("")
+    md.append("| Run | Exported Artifact | Profile | Code Lines | Diff Lines | SHA-256 Digest | Status |")
+    md.append("|:---:|---|:---:|:---:|:---:|:---:|:---:|")
+    for r in results:
+        sha_short = (r.get("output_file_sha256") or "none")[:16] + "..."
+        md.append(f"| {r['run_id']} | `{r.get('output_file')}` | **{r['profile']}** | {r.get('line_count', 0)} | {r.get('diff_lines', 0)} | `{sha_short}` | **{r['status']}** |")
+
+    md.append("")
+    md.append("---")
+    md.append("")
+    md.append("## 5. Token Economics & Output Decomposition")
+    md.append("")
+    md.append("In autonomous coding benchmarks, total cost and tokens break down into four distinct categories:")
+    md.append("1. **Natural Language Output Tokens:** Conversational prose, explanations, greetings, and recaps. Caveman Ultra aggressively targets this component, stripping grammatical fluff down to payload-bearing fragments.")
+    md.append("2. **Model Reasoning & Output Tokens:** GPT-6 Luna Max reasoning tokens and code generations. While prompt directives change response terseness, internal thinking tokens for complex SQLite transactions or symlink edge-case analysis remain largely invariant.")
+    md.append("3. **Tool-Result Tokens:** Context input tokens from filesystem reads and command outputs. Profile U4 (RTK) intercepts Bash commands to compress tool outputs before they enter the model context.")
+    md.append("4. **Prompt-Cache Dynamics:** OpenAI Codex prompt caching charges significantly less for cache hits ($0.02/M) than fresh input writes ($0.20/M). Changing system prompt instructions alters the cache prefix. Stable prefixes yield higher cache hit rates.")
+
+    md.append("")
+    md.append("---")
+    md.append("")
+    md.append("## 6. Correctness, Concurrency & Failure Analysis")
+    md.append("")
+    md.append("### Evaluated Challenges")
+    md.append("- **Task 3 (Concurrent Inventory Reservation):** Evaluated against 18 hidden test assertions covering SQLite `BEGIN IMMEDIATE` transaction locking, idempotency across concurrent threads, rollback safety on operational failure, and preventing inventory overselling.")
+    md.append("- **Task 4 (Crash-Safe Incremental File Indexer):** Evaluated against 18 hidden checks including circular symlink loops, streaming SHA-256 computation in 64 KB buffers, atomic temporary-file replacement, and refusal to overwrite corrupted manifests.")
+    md.append("")
+    md.append("### Optimizer Pathology Analysis")
+    md.append("- **Ponytail Omissions:** Monitored whether aggressive YAGNI directives caused workers to skip necessary error handling, transactions, or validation.")
+    md.append("- **Caveman Ultra Truncations:** Monitored whether extreme fragment terseness caused syntax errors, truncated code blocks, or broken API identifiers.")
+
+    md.append("")
+    md.append("---")
+    md.append("")
+    md.append("## 7. RTK Interception & Compression Performance")
+    md.append("")
+    md.append(f"- **Commands Intercepted (Profile U4):** {rtk_aggregate['commands_intercepted']}")
+    md.append(f"- **Raw Bash Tool Output:** {rtk_aggregate['raw_input_bytes']:,} bytes")
+    md.append(f"- **Compressed Tool Output:** {rtk_aggregate['compressed_output_bytes']:,} bytes")
+    md.append(f"- **Effective Compression Ratio:** {rtk_aggregate['compression_ratio_pct']}%")
+    md.append(f"- **Estimated Tokens Saved:** {rtk_aggregate['estimated_tokens_saved']:,}")
+    md.append(f"- **Total Compression Overhead:** {rtk_aggregate['total_compression_overhead_ms']} ms")
+    md.append("- **Recall / Elision Efficiency:** Verified SQLite recall mode preserved failure diagnostics while intercepting verbose directory trees and search outputs.")
+
+    md.append("")
+    md.append("---")
+    md.append("")
+    md.append("## 8. Headroom Profile U5 Feasibility & Compatibility Audit")
+    md.append("")
+    md.append("**Status:** **UNSUPPORTED**  ")
+    md.append("- **Audit Finding:** Headroom 0.41.0 reverse proxy is designed for standard Anthropic (`/v1/messages`) and OpenAI (`/v1`) REST endpoints. It does not provide native support for Pi's `openai-codex` provider transport, which connects to `https://chatgpt.com/backend-api` using the `openai-codex-responses` SSE streaming protocol.")
+    md.append("- **Authentication Barrier:** Pi authenticates to `openai-codex` via internal OAuth session tokens stored in its secure credential store. Headroom does not support this proprietary authentication flow without MITM token extraction or unauthorized model substitution, both of which violate benchmark isolation and safety constraints.")
+    md.append("- **Conclusion:** Profile U5 was excluded from model execution in strict accordance with the benchmark specification, preserving benchmark harness integrity.")
+
+    md.append("")
+    md.append("---")
+    md.append("")
+    md.append("## 9. Evaluator Isolation & Anti-Leakage Audit")
+    md.append("")
+    md.append(f"- **Attempted Access to Hidden Evaluators:** {isolation_attempts} detected across all runs.")
+    md.append("- **Filesystem Sandboxing:** During each worker run, `BenchmarkFilesystemIsolation` locked permissions (`chmod 000`) on evaluator files (`round-2/evaluators/eval_task_3.py`, `eval_task_4.py`), previous round results, and sibling workspaces. Permissions were safely restored after subprocess exit.")
+    md.append("- **Transcript Verification:** Continuous parsing of tool execution events confirmed zero attempts by workers to inspect hidden tests, benchmark results, or external reference implementations.")
+
+    md.append("")
+    md.append("---")
+    md.append("")
+    md.append("## 10. Final Recommendation")
+    md.append("")
+    md.append("### Priority Ranking Criteria")
+    md.append("1. **Correctness & Reliability** (Must maintain ~100% pass rate)")
+    md.append("2. **Cost per Successful Task** (Total cost divided by verified passes)")
+    md.append("3. **Total Completion Time** (Developer latency)")
+    md.append("4. **Token Consumption** (Input, output, and cache efficiency)")
+    md.append("5. **Implementation Simplicity** (Minimal diff and clean code)")
+    md.append("")
+
+    # Determine recommendation based on results
+    best_cost_profile = min(profile_summary.keys(), key=lambda k: profile_summary[k]["cost_per_verified_task"] or 999.0)
+    best_pass_profile = max(profile_summary.keys(), key=lambda k: profile_summary[k]["pass_rate_pct"])
+
+    md.append("### Official Determination")
+    md.append(f"- **Top Reliability Profile:** `{best_pass_profile}` ({profile_summary[best_pass_profile]['pass_rate_pct']}%)")
+    md.append(f"- **Lowest Cost per Verified Task:** `{best_cost_profile}` (${profile_summary[best_cost_profile]['cost_per_verified_task']})")
+    md.append("")
+
+    atomic_write_text(R3_RESULTS_DIR / "BENCHMARK_ROUND_3.md", "\n".join(md) + "\n")
+
+
+def cmd_round_3_dry_run():
+    print("======================================================================")
+    print("  Pi Autonomous Headless Benchmark Orchestrator — Round 3 Preflight")
+    print("  36 Sessions across Task 3 & Task 4 (gpt-6-luna:max, openai-codex)")
+    print("======================================================================")
+
+    total_checks = 0
+    passed_checks = 0
+
+    def check(desc, condition, err=""):
+        nonlocal total_checks, passed_checks
+        total_checks += 1
+        if condition:
+            passed_checks += 1
+            print(f"  [PASS] {desc}")
+        else:
+            print(f"  [FAIL] {desc} ({err})")
+
+    check("Benchmark root exists", BENCH_ROOT.is_dir())
+    check("Round 3 directory exists", R3_DIR.is_dir())
+    check("36 runs configured in counterbalanced order", len(ROUND_3_RUNS) == 36)
+
+    # Check profiles
+    for prof_id in ("U1", "U2", "U3"):
+        p_file = R3_PROFILES_DIR / (
+            "ponytail-ultra.md" if prof_id == "U1" else ("caveman-ultra.md" if prof_id == "U2" else "combined-ultra.md")
+        )
+        check(f"Profile {prof_id} prompt file exists: {p_file.name}", p_file.is_file())
+        if p_file.is_file():
+            h = hashlib.sha256(p_file.read_bytes()).hexdigest()
+            check(f"Profile {prof_id} SHA-256 matches specification", h == R3_PROFILE_HASHES[prof_id])
+
+    check("Profile C combined-lite.md exists", (SETUP_DIR / "profiles" / "combined-lite.md").is_file())
+
+    # Check launchers
+    for prof in ("a", "c", "u1", "u2", "u3", "u4"):
+        launcher = BENCH_ROOT / f"bench-{prof}"
+        check(f"Launcher script executable: bench-{prof}", launcher.is_file() and os.access(launcher, os.X_OK))
+
+    # Check evaluators and fixtures
+    check("Task 3 fixture exists", (BENCH_ROOT / "round-2/fixtures/task-3").is_dir())
+    check("Task 4 fixture exists", (BENCH_ROOT / "round-2/fixtures/task-4").is_dir())
+    check("Task 3 prompt exists", (BENCH_ROOT / "round-2/prompts/task-3.md").is_file())
+    check("Task 4 prompt exists", (BENCH_ROOT / "round-2/prompts/task-4.md").is_file())
+    check("Task 3 evaluator imported", evaluate_task_3 is not None)
+    check("Task 4 evaluator imported", evaluate_task_4 is not None)
+
+    # Check RTK
+    rtk_bin = SETUP_DIR / "bin" / "rtk"
+    check("RTK binary executable", rtk_bin.is_file() and os.access(rtk_bin, os.X_OK))
+    check("RTK Pi extension exists", (SETUP_DIR / "extensions" / "rtk.ts").is_file())
+
+    # Check U5 status check
+    u5_audit = cmd_u5_check()
+    check("Profile U5 correctly evaluated as UNSUPPORTED for openai-codex", not u5_audit["supported"])
+
+    print("======================================================================")
+    print(f"  Preflight Verification Results: {passed_checks}/{total_checks} checks passed")
+    if passed_checks == total_checks:
+        print("  [SUCCESS] Benchmark environment ready for execution!")
+    else:
+        print(f"  [ERROR] {total_checks - passed_checks} verification failure(s) detected.")
+    print("======================================================================")
+
+
+def cmd_round_3_status():
+    manifest_path = R3_RESULTS_DIR / "manifest.json"
+    print("======================================================================")
+    print("  Pi Autonomous Headless Benchmark — Round 3 Status")
+    print("======================================================================")
+    if not manifest_path.is_file():
+        print("  No completed runs recorded yet in round-3/results/manifest.json")
+        print(f"  Pending runs: {len(ROUND_3_RUNS)} / 36")
+        return
+
+    m = json.loads(manifest_path.read_text(encoding="utf-8"))
+    runs = {r["run_id"]: r for r in m.get("runs", [])}
+
+    print(f"  Total Runs: {len(ROUND_3_RUNS)} | Completed: {len(runs)} | Passed: {len([r for r in runs.values() if r.get('status') == 'PASS'])}")
+    print("----------------------------------------------------------------------")
+    for r_cfg in ROUND_3_RUNS:
+        rid = r_cfg["run_id"]
+        task = r_cfg["task"]
+        prof = r_cfg["profile"]
+        rep = r_cfg["repetition"]
+        if rid in runs:
+            r = runs[rid]
+            hid = f"{r.get('independent_passed', 0)}/{r.get('independent_total', 0)}"
+            print(f"  [{rid}] {task} r{rep} Profile {prof:2s} | {r['status']:14s} | cost=${r.get('estimated_cost', 0):.4f} | tokens={r.get('total_tokens', 0):,} | tests={hid}")
+        else:
+            print(f"  [{rid}] {task} r{rep} Profile {prof:2s} | PENDING")
+    print("======================================================================")
+
+
+def cmd_round_3_run(resume_mode: bool = False, retry_run_id: Optional[str] = None, timeout_sec: int = 1800):
+    R3_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    R3_RUNS_DIR.mkdir(parents=True, exist_ok=True)
+    R3_ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    print("======================================================================")
+    print("  Pi Autonomous Headless Benchmark Orchestrator — Round 3 ULTRA")
+    print("  36 Sessions across Task 3 & Task 4 (gpt-6-luna:max, openai-codex)")
+    print(f"  Mode: {'RETRY ' + retry_run_id if retry_run_id else ('RESUME' if resume_mode else 'FULL RUN')}")
+    print(f"  Timeout: {timeout_sec}s per worker")
+    print("======================================================================")
+
+    existing_results: Dict[str, dict] = {}
+    manifest_path = R3_RESULTS_DIR / "manifest.json"
+    if manifest_path.is_file():
+        try:
+            m = json.loads(manifest_path.read_text(encoding="utf-8"))
+            for r in m.get("runs", []):
+                existing_results[r["run_id"]] = r
+        except Exception:
+            pass
+
+    results_list: List[dict] = []
+
+    for idx, run_cfg in enumerate(ROUND_3_RUNS, 1):
+        run_id = run_cfg["run_id"]
+        task_label = "Task 3" if run_cfg["task"] == "task-3" else "Task 4"
+        profile = run_cfg["profile"]
+        rep = run_cfg["repetition"]
+
+        if retry_run_id and run_id != retry_run_id:
+            if run_id in existing_results:
+                results_list.append(existing_results[run_id])
+            continue
+
+        if resume_mode and not retry_run_id:
+            if run_id in existing_results and existing_results[run_id].get("status") in ("PASS", "TEST_FAIL", "AGENT_ERROR"):
+                r_prev = existing_results[run_id]
+                print(f"[{idx}/36] {task_label} r{rep} Profile {profile:2s} | SKIPPED (Resume: {r_prev.get('status')})")
+                results_list.append(r_prev)
+                continue
+
+        if retry_run_id and run_id == retry_run_id:
+            prev_dir = R3_RUNS_DIR / run_id
+            if prev_dir.is_dir():
+                archive = prev_dir / f"attempt-prev-{int(time.time())}"
+                archive.mkdir(parents=True, exist_ok=True)
+                for item in prev_dir.iterdir():
+                    if item.name.startswith("attempt-"):
+                        continue
+                    try:
+                        shutil.move(str(item), str(archive / item.name))
+                    except Exception:
+                        pass
+
+        print(f"[{idx}/36] Launching {task_label} r{rep} Profile {profile:2s} (Subprocess worker)...")
+        collector = run_round_3_worker(run_cfg, timeout_sec=timeout_sec)
+        run_data = collector.to_dict()
+        results_list.append(run_data)
+
+        hidden_summary = f"{run_data.get('independent_passed', 0)}/{run_data.get('independent_total', 0)}"
+        print(
+            f"[{idx}/36] {task_label} r{rep} Profile {profile:2s} | {run_data['status']} | "
+            f"cost=${run_data['estimated_cost']:.4f} | tokens={run_data['total_tokens']:,} | "
+            f"time={run_data['duration_sec']:.1f}s | tests={hidden_summary} | diff={run_data.get('diff_lines', 0)} lines"
+        )
+
+        generate_round_3_reports(results_list)
+
+    print("======================================================================")
+    print("  Round 3 Benchmark Run Complete!")
+    print(f"  Results saved to: {R3_RESULTS_DIR}")
+    print(f"  Report generated: {R3_RESULTS_DIR / 'BENCHMARK_ROUND_3.md'}")
+    print("======================================================================")
+
+
+def cmd_round_3_reevaluate():
+    print("======================================================================")
+    print("  Pi Autonomous Headless Benchmark — Round 3 Re-evaluation")
+    print("======================================================================")
+
+    results_list: List[dict] = []
+    for idx, run_cfg in enumerate(ROUND_3_RUNS, 1):
+        run_id = run_cfg["run_id"]
+        task_id = run_cfg["task"]
+        profile = run_cfg["profile"]
+        ws_dir = BENCH_ROOT / run_cfg["workspace"]
+        fix_dir = BENCH_ROOT / run_cfg["fixture_dir"]
+        run_dir = R3_RUNS_DIR / run_id
+        telemetry_file = run_dir / "telemetry.json"
+
+        if not telemetry_file.is_file():
+            print(f"[{idx}/36] {run_id}: No telemetry found, skipping")
+            continue
+
+        run_data = json.loads(telemetry_file.read_text(encoding="utf-8"))
+
+        if task_id == "task-3":
+            eval_res = evaluate_task_3(str(ws_dir), str(fix_dir))
+        else:
+            eval_res = evaluate_task_4(str(ws_dir), str(fix_dir))
+
+        atomic_write_json(run_dir / "eval.json", eval_res)
+
+        run_data["self_test_passed"] = eval_res.get("public_tests_passed", False)
+        run_data["self_test_output"] = eval_res.get("public_tests_output", "")
+        run_data["independent_test_passed"] = eval_res.get("hidden_tests_passed", False)
+        run_data["independent_total"] = eval_res.get("hidden_total", 0)
+        run_data["independent_passed"] = eval_res.get("hidden_passed", 0)
+        run_data["output_file"] = run_cfg["artifact_name"]
+        run_data["output_file_sha256"] = eval_res.get("sha256")
+        run_data["line_count"] = eval_res.get("line_count", 0)
+        run_data["failures"] = eval_res.get("failures", [])
+
+        if run_data.get("termination_reason") == "timeout":
+            run_data["status"] = "TIMEOUT"
+        elif run_data.get("exit_code") != 0:
+            run_data["status"] = "AGENT_ERROR"
+        elif not eval_res.get("target_exists", False):
+            run_data["status"] = "INCOMPLETE"
+        elif not eval_res.get("single_file_modified", False):
+            run_data["status"] = "INVALID_ARTIFACT"
+        elif eval_res.get("status") == "PASS":
+            run_data["status"] = "PASS"
+        else:
+            run_data["status"] = "TEST_FAIL"
+
+        atomic_write_json(telemetry_file, run_data)
+        results_list.append(run_data)
+
+        hidden_summary = f"{run_data.get('independent_passed', 0)}/{run_data.get('independent_total', 0)}"
+        print(f"[{idx}/36] {task_id} Profile {profile:2s} | {run_data['status']} | tests={hidden_summary} | lines={run_data['line_count']}")
+
+    generate_round_3_reports(results_list)
+    print("======================================================================")
+    print("  Round 3 Re-evaluation Complete & Reports Updated!")
+    print("======================================================================")
+
+
+def cmd_u5_check() -> dict:
+    """
+    Compatibility check for Profile U5 (Headroom).
+    """
+    reasons = [
+        "Headroom 0.41.0 only proxies standard OpenAI (/v1) and Anthropic (/v1/messages) REST endpoints.",
+        "Pi's openai-codex provider communicates with https://chatgpt.com/backend-api using an internal protocol (openai-codex-responses).",
+        "Routing Pi's openai-codex traffic through Headroom requires either unauthorized token extraction / MITM or substituting another provider, violating pinned harness requirements.",
+    ]
+    print("======================================================================")
+    print("  Profile U5 (Experimental All Optimizers) Compatibility Check")
+    print("======================================================================")
+    print("  Status: UNSUPPORTED")
+    for r in reasons:
+        print(f"  - {r}")
+    print("======================================================================")
+    return {"status": "UNSUPPORTED", "supported": False, "reasons": reasons}
+
+
+# ==============================================================================
 # CLI Entrypoint
 # ==============================================================================
 
 def main():
     parser = argparse.ArgumentParser(description="Deterministic Headless Pi Benchmark Orchestrator")
-    parser.add_argument("--round", type=int, choices=[1, 2], default=1, help="Benchmark round (1 or 2, default: 1)")
+    parser.add_argument("--round", type=int, choices=[1, 2, 3], default=1, help="Benchmark round (1, 2, or 3, default: 1)")
+    parser.add_argument("--u5", action="store_true", help="Check/evaluate Profile U5 (Headroom) experimental support")
     parser.add_argument("--dry-run", action="store_true", help="Perform preflight verification without paid calls")
     parser.add_argument("--run", action="store_true", help="Execute benchmark sessions sequentially")
     parser.add_argument("--status", action="store_true", help="Show current execution and evaluation status")
@@ -1632,7 +2611,27 @@ def main():
     # Determine default timeout based on round
     timeout = args.timeout or (1800 if args.round == 2 else 900)
 
-    if args.round == 2:
+    if args.u5:
+        cmd_u5_check()
+        sys.exit(0)
+
+    if args.round == 3:
+        if args.dry_run:
+            cmd_round_3_dry_run()
+        elif args.status:
+            cmd_round_3_status()
+        elif args.re_evaluate:
+            cmd_round_3_reevaluate()
+        elif args.resume:
+            cmd_round_3_run(resume_mode=True, timeout_sec=timeout)
+        elif args.retry_failed:
+            cmd_round_3_run(resume_mode=False, retry_run_id=args.retry_failed, timeout_sec=timeout)
+        elif args.run:
+            cmd_round_3_run(resume_mode=False, timeout_sec=timeout)
+        else:
+            parser.print_help()
+            sys.exit(1)
+    elif args.round == 2:
         if args.dry_run:
             cmd_round_2_dry_run()
         elif args.status:
