@@ -1,0 +1,17 @@
+{
+  "task": "task-5",
+  "workspace_dir": "/home/khoa/pi-token-bench/round-4/workspaces/task-5/repeat-3/test-config-c",
+  "target_file": "src/chunked_decoder.py",
+  "target_exists": true,
+  "single_file_modified": true,
+  "unexpected_modifications": [],
+  "line_count": 277,
+  "sha256": "65bd4f42428152dc046235cc749ec0cb0c830f85a0373e891a099b1b38f83721",
+  "public_tests_passed": true,
+  "public_tests_output": ".............\n----------------------------------------------------------------------\nRan 13 tests in 0.000s\n\nOK",
+  "hidden_tests_passed": true,
+  "hidden_total": 24,
+  "hidden_passed": 24,
+  "failures": [],
+  "status": "PASS"
+}

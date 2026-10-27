@@ -1,0 +1,80 @@
+{
+  "generated_at": "2026-10-26T18:30:00Z",
+  "round": 4,
+  "tasks": {
+    "task-5": {
+      "name": "Streaming HTTP Chunked Decoder",
+      "editable_file": "src/chunked_decoder.py",
+      "files": {
+        "README.md": "d3325169a58cfbd43e20eedd756b819da4b2193af48c6f91ae537290d7148c0d",
+        "src/__init__.py": "f536494db6f8d229e9a64bcb9e609323c4b3a4ecdf2f28163b277963580a5926",
+        "src/chunked_decoder.py": "ba0a9f825801e9328635eac37add3b8e514746addd9083c3807bc09acb577931",
+        "src/constants.py": "94ca10e5934279edff316ec0948ec2ee344c27bd9bbe613b4c163c73f05cfa54",
+        "src/exceptions.py": "8438b81351024a931ef8e94e6eac4f8ff33189d34be5bb7a2b0584b04ba3bf49",
+        "src/headers.py": "dbb05aaf3acd9aee93e1b19adac9c831fbc0baa744a47bdb607eab04efbb2d8c",
+        "tests/__init__.py": "927da095bd0b64d98ee253bafc54914370216748406301b0cfc362a587cde278",
+        "tests/test_basic.py": "b674ac7c69c997d71d15b2789ab3f69f805b2bc8f5a6f4d8dd4a44cb7cfd2532",
+        "tests/test_fragmentation.py": "15cad7fce3d4fc8a848c1c1f7abf06852b5a76b5fb3718148da98209091604d1",
+        "tests/test_limits.py": "4b9a0c1da2c0ad4d382bb999ebd97bc0ab751bd5f9700ec3198551222e1308fc"
+      },
+      "prompt_hash": "7507d6c98cae0a4d60d0bfb38986cc609c2866f045ac3ebc815b4817de080f25",
+      "evaluator_hash": "f29e6c3b38ffd31cecc93aab105df675e25203338e0c7f370ce923ae5e469026",
+      "reference_hash": "08c553a447f6f9ef162a67986dd2b9f7db749edb6540b432faab55301661688e"
+    },
+    "task-6": {
+      "name": "Fault-Tolerant Concurrent Job Scheduler",
+      "editable_file": "src/scheduler.py",
+      "files": {
+        "README.md": "6565b2458eff237b6b256c1ecd9c720792e53e1ca7fb6563f3e211f0b1cca305",
+        "src/__init__.py": "970866b6a777a55fde207fcca70c41f76df780a8176e536e9c48588dc7edc052",
+        "src/exceptions.py": "006bf34b0d6c816dbd6c7f2bd88723ef0596867acbee384a5a928c534526337d",
+        "src/graph.py": "3b2349072d633ccff12973323f418d3cf5df9af8ccafbbbba80aaddf42206d27",
+        "src/models.py": "4c3195893e1a92b9871bc83339c9e66d3c8728b3a043ed83fd6782c65875ee74",
+        "src/scheduler.py": "21a0daece457b3abe73a948754cdb2eeb8044cb4d830ca2e231879a4a14a5333",
+        "tests/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "tests/test_basic.py": "9e2bedd5b2eb864baa65b6b7b18d9f799ba4204c42125e2d73b4e4e7520e7784",
+        "tests/test_dependencies.py": "779a7724f196bf70fa8f7cd12226238f9ba229d80d54b021f639afcf010ccd5b",
+        "tests/test_retry_and_skip.py": "18298e58d3b96b1438db5cdbc19b1b30944a16fb15fbbe079de19ac67088434a"
+      },
+      "prompt_hash": "961d01eaaf79535018192cf59c2145ae314ef7a0d106dd1ab013bacccbd97ffa",
+      "evaluator_hash": "6ce64e67835cb6b46d88287c3898b0e844fb8b48b3cb671cdb326f16b9a6ac65",
+      "reference_hash": "33e26468b9eae9469a0bd9c4d60acc4030db741fe9a5c862afcc5cb04847975d"
+    },
+    "task-7": {
+      "name": "Crash-Safe Event-Sourced Ledger",
+      "editable_file": "src/ledger.py",
+      "files": {
+        "README.md": "e93d5aff6de4993ec3c76bc3ab53fd0caf4cf5b6a51d6e27bf23e45cb083a7ea",
+        "src/__init__.py": "64417a1a1a2df982604cb42f4d2f1226874dd5c97f2f91a5d3b4edf30cf23d9d",
+        "src/exceptions.py": "1e95af4b14f8e3f3d59f3fffebbedf49baa5ebe1b270f3ff2d873bf302d56fd9",
+        "src/journal.py": "5cbae11893aa1323376807afa291b83d5846f0c41f8426345791b8c167b488bb",
+        "src/ledger.py": "db315f3996d577467ffe5394e9b31c1eb7adb13611636ffd4ebfe29883f96371",
+        "src/models.py": "535bd6df8c9275c1947c65b862ea46cbeff1da8d669401b75ed5d118f4d36745",
+        "tests/__init__.py": "7900bf4e09b1d5481dedf095febdb415d647541682379a068b65c8b9b2943f30",
+        "tests/test_basic.py": "00f2ba80d19d0f487082a335040921efd76fc77dd775354c1599719c56789f79",
+        "tests/test_idempotency.py": "705f2e82cec511daa38f8aab7cc834249df8e6f2024ea0fa25458f9080f950bf",
+        "tests/test_transfer.py": "1e5bbe383652f6dfd46ec11263d34b442854d377ba28cefb23c5e7c952fd4b2e"
+      },
+      "prompt_hash": "939bdecb089dd5d5ed0778f8c5f31eff5d571ad37fb921c8c15b168ab9446ff3",
+      "evaluator_hash": "9560b0d10e5951901fbfd03f2ee1d087dd0d17262fed0b5ecb213e1d0074a716",
+      "reference_hash": "de1cae97640566512771d8a9665caa11589408fc24feb392c0e93b88ff3ddf78"
+    }
+  },
+  "profiles": {
+    "A": {
+      "name": "A \u2014 Baseline",
+      "overlay": null,
+      "sha256": null
+    },
+    "C": {
+      "name": "C \u2014 Combined Lite",
+      "overlay": "setup/profiles/combined-lite.md",
+      "sha256": "214380817ea43286f66bcf4a0b63a800f18e827535de396b8e277ca8e62e46da"
+    },
+    "U3": {
+      "name": "U3 \u2014 Combined Ultra",
+      "overlay": "round-3/profiles/combined-ultra.md",
+      "sha256": "37888e57f2217de5dde63fadb0ad148e136128ccf09a58e39836a3c7078580e7"
+    }
+  }
+}

@@ -61,6 +61,8 @@ if str(EVAL_DIR) not in sys.path:
     sys.path.insert(0, str(EVAL_DIR))
 if str(R2_EVAL_DIR) not in sys.path:
     sys.path.insert(0, str(R2_EVAL_DIR))
+if str(SETUP_DIR / "scripts") not in sys.path:
+    sys.path.insert(0, str(SETUP_DIR / "scripts"))
 
 try:
     from eval_task_1 import evaluate_task_1
@@ -75,6 +77,19 @@ try:
 except ImportError:
     evaluate_task_3 = None
     evaluate_task_4 = None
+
+try:
+    from headless_r4_impl import (
+        cmd_round_4_dry_run,
+        cmd_round_4_status,
+        cmd_round_4_run,
+        cmd_round_4_reevaluate,
+    )
+except ImportError:
+    cmd_round_4_dry_run = None
+    cmd_round_4_status = None
+    cmd_round_4_run = None
+    cmd_round_4_reevaluate = None
 
 # Round 1 canonical runs
 RUN_CONFIGS = [
@@ -2596,26 +2611,43 @@ def cmd_u5_check() -> dict:
 
 def main():
     parser = argparse.ArgumentParser(description="Deterministic Headless Pi Benchmark Orchestrator")
-    parser.add_argument("--round", type=int, choices=[1, 2, 3], default=1, help="Benchmark round (1, 2, or 3, default: 1)")
+    parser.add_argument("--round", type=int, choices=[1, 2, 3, 4], default=1, help="Benchmark round (1, 2, 3, or 4, default: 1)")
     parser.add_argument("--u5", action="store_true", help="Check/evaluate Profile U5 (Headroom) experimental support")
     parser.add_argument("--dry-run", action="store_true", help="Perform preflight verification without paid calls")
     parser.add_argument("--run", action="store_true", help="Execute benchmark sessions sequentially")
     parser.add_argument("--status", action="store_true", help="Show current execution and evaluation status")
     parser.add_argument("--resume", action="store_true", help="Skip completed runs and execute pending runs")
+    parser.add_argument("--wave", type=int, default=None, help="Execute a specific wave (1-9)")
     parser.add_argument("--retry-failed", type=str, metavar="RUN_ID", help="Retry a specific failed run (e.g. run-03)")
     parser.add_argument("--re-evaluate", action="store_true", help="Re-run evaluators on existing run artifacts and refresh reports")
-    parser.add_argument("--timeout", type=int, default=None, help="Per-worker timeout in seconds (default: 900 for R1, 1800 for R2)")
+    parser.add_argument("--timeout", type=int, default=None, help="Per-worker timeout in seconds (default: 900 for R1, 1800 for R2/R3/R4)")
 
     args = parser.parse_args()
 
     # Determine default timeout based on round
-    timeout = args.timeout or (1800 if args.round == 2 else 900)
+    timeout = args.timeout or (1800 if args.round in (2, 3, 4) else 900)
 
     if args.u5:
         cmd_u5_check()
         sys.exit(0)
 
-    if args.round == 3:
+    if args.round == 4:
+        if args.dry_run:
+            cmd_round_4_dry_run()
+        elif args.status:
+            cmd_round_4_status()
+        elif args.re_evaluate:
+            cmd_round_4_reevaluate()
+        elif args.resume:
+            cmd_round_4_run(resume_mode=True, wave_filter=args.wave, timeout_sec=timeout)
+        elif args.retry_failed:
+            cmd_round_4_run(resume_mode=False, retry_run_id=args.retry_failed, wave_filter=args.wave, timeout_sec=timeout)
+        elif args.run:
+            cmd_round_4_run(resume_mode=False, wave_filter=args.wave, timeout_sec=timeout)
+        else:
+            parser.print_help()
+            sys.exit(1)
+    elif args.round == 3:
         if args.dry_run:
             cmd_round_3_dry_run()
         elif args.status:

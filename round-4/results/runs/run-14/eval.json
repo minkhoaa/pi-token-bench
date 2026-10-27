@@ -1,0 +1,17 @@
+{
+  "task": "task-6",
+  "workspace_dir": "/home/khoa/pi-token-bench/round-4/workspaces/task-6/repeat-2/test-config-a",
+  "target_file": "src/scheduler.py",
+  "target_exists": true,
+  "single_file_modified": true,
+  "unexpected_modifications": [],
+  "line_count": 141,
+  "sha256": "59a8a43571280d36db694b800ed2847691de89bc108395336f4eed1c5bc3f5f1",
+  "public_tests_passed": true,
+  "public_tests_output": "..........\n----------------------------------------------------------------------\nRan 10 tests in 0.063s\n\nOK",
+  "hidden_tests_passed": true,
+  "hidden_total": 22,
+  "hidden_passed": 22,
+  "failures": [],
+  "status": "PASS"
+}

@@ -1,0 +1,17 @@
+{
+  "task": "task-7",
+  "workspace_dir": "/home/khoa/pi-token-bench/round-4/workspaces/task-7/repeat-2/test-config-u3",
+  "target_file": "src/ledger.py",
+  "target_exists": true,
+  "single_file_modified": true,
+  "unexpected_modifications": [],
+  "line_count": 258,
+  "sha256": "4f42fcb19790a2d3ec82f3a98161c97bee98c80166de66d91b22067f932e43f9",
+  "public_tests_passed": true,
+  "public_tests_output": "..................\n----------------------------------------------------------------------\nRan 18 tests in 0.004s\n\nOK\n",
+  "hidden_tests_passed": true,
+  "hidden_total": 22,
+  "hidden_passed": 22,
+  "failures": [],
+  "status": "PASS"
+}

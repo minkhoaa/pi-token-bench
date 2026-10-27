@@ -19,6 +19,9 @@ setup/sessions/
 # Benchmark runtime transcripts and raw logs
 *.jsonl
 *.log
+round-4/results/runs/*/stdout.jsonl
+round-4/results/runs/*/stderr.log
+round-4/workspaces/
 round-3/results/runs/*/stdout.jsonl
 round-3/results/runs/*/stderr.log
 round-2/results/runs/*/stdout.jsonl
